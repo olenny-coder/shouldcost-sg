@@ -6,14 +6,16 @@ PY ?= python
 BACKEND := backend
 FRONTEND := frontend
 
-.PHONY: help install install-backend install-frontend seed cpi-seed test test-backend build \
-        dev dev-backend dev-frontend clean reset-db
+.PHONY: help install install-backend install-frontend seed cpi-seed price-series-seed \
+        verify-seed test test-backend build dev dev-backend dev-frontend clean reset-db
 
 help:
 	@echo "shouldcost-sg - available targets"
 	@echo "  make install   Install backend (pip) and frontend (npm) dependencies"
 	@echo "  make seed      Load the bundled CSV seed data (idempotent)"
 	@echo "  make cpi-seed  Rebuild data/cpi_series.csv from the publisher downloads (.realdata/)"
+	@echo "  make price-series-seed  Rebuild data/price_series.csv (CPI + 16 India PPI baskets)"
+	@echo "  make verify-seed        Re-derive every seeded value from the publisher file"
 	@echo "  make test      Run the backend test suite"
 	@echo "  make build     Production build of the frontend"
 	@echo "  make dev-backend   Run FastAPI on http://localhost:8000"
@@ -35,6 +37,17 @@ seed:
 # (SingStat table M213751 and the MoSPI CPI release). Then `make seed` upserts it.
 cpi-seed:
 	$(PY) tools/build_cpi_seed.py
+
+# Rebuild the combined price-series seed: the CPI rows carried over from
+# cpi_series.csv plus the 16 real India producer baskets read out of the OPPI/WPI
+# workbook in ../.realdata/. Run this after cpi-seed, then run seed.
+price-series-seed:
+	$(PY) ../.realdata/build_price_series.py
+
+# Re-derive every seeded value from the publisher's own download and diff it against
+# what is committed. Exits non-zero if anything has drifted.
+verify-seed:
+	$(PY) tools/verify_seed_data.py
 
 test: test-backend
 

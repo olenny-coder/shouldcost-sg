@@ -24,7 +24,7 @@ change in the country's monthly CONSUMER PRICE INDEX between the two quarters:
 
 Both CPI endpoints are the mean of the months available in that quarter. This is
 a MODELLED step: consumer prices are not construction costs. So every bridged line
-is basis="assumed" and flagged cpi_bridged, the bridge appears as its own step in
+is basis="assumed" and flagged index_bridged, the bridge appears as its own step in
 the waterfall, and it is restated in assumptions[]. Set index_bridge="none" on the
 request to switch it off, in which case the last observation is simply held and a
 warning says so.
@@ -348,7 +348,7 @@ def _bridge_with_series(
 
     from_months = [month for month in quarter_months(observation_quarter) if month in by_month]
     if not from_months:
-        bridge.reason = "no_cpi_observation_for_the_observation_quarter"
+        bridge.reason = "no_price_observation_for_the_observation_quarter"
         return bridge
 
     target_months = [month for month in quarter_months(requested_quarter) if month in by_month]
@@ -364,18 +364,18 @@ def _bridge_with_series(
             and month_sort_key(month) <= month_sort_key(quarter_end)
         ]
         if not candidates:
-            bridge.reason = "no_cpi_observation_after_the_index_observation"
+            bridge.reason = "no_price_observation_after_the_index_observation"
             return bridge
         target_months = [candidates[-1]]
 
     from_value = sum(by_month[month] for month in from_months) / len(from_months)
     to_value = sum(by_month[month] for month in target_months) / len(target_months)
     if not from_value:
-        bridge.reason = "cpi_value_at_the_observation_quarter_is_zero"
+        bridge.reason = "price_value_at_the_observation_quarter_is_zero"
         return bridge
 
     bridge.applied = True
-    bridge.reason = "bridged_with_cpi"
+    bridge.reason = "bridged_with_price_index"
     bridge.from_months = from_months
     bridge.to_months = target_months
     bridge.from_value = from_value
@@ -549,15 +549,16 @@ def resolve_tpi(
     tender_quarter: str,
     country: str = DEFAULT_COUNTRY,
     *,
-    bridge: str = BRIDGE_CPI,
+    bridge: str = BRIDGE_AUTO,
 ) -> ResolvedTPI:
     """Resolve a TPI observation for one country.
 
     Fallback order: exact series + exact quarter, then exact series + nearest
-    PRIOR quarter, carried forward to the requested quarter by the observed CPI
-    movement (see the module docstring). Pass bridge="none" to hold the last
-    observation instead. Anything else raises TPILookupError with an explicit
-    message.
+    PRIOR quarter, carried forward to the requested quarter by the observed
+    movement in a PRODUCER price index, falling back to a CONSUMER price index
+    only when no producer series spans both quarters (see resolve_index_bridge).
+    Pass bridge="none" to hold the last observation instead. Anything else raises
+    TPILookupError with an explicit message.
     """
     requested = quarter_sort_key(tender_quarter)  # validates the format
     code = (country or DEFAULT_COUNTRY).strip().upper()
@@ -792,9 +793,12 @@ class LineResult:
     tpi_base_value: float
     tpi_ratio: float
     tpi_fallback_used: bool
-    # CPI bridge: the modelled step that carried a stale observation forward.
+    # Index bridge: the modelled step that carried a stale observation forward. The
+    # bridge runs on a producer price index where the market publishes one, so the
+    # kind travels with the line instead of being assumed to be a CPI.
     tpi_bridged: bool
     cpi_bridge_factor: float
+    index_bridge_kind: str
     cpi_series_name: str
     cpi_month_used: str
     cpi_value_used: float | None
@@ -1010,17 +1014,32 @@ def build_benchmark(
         )
     if bridged and bridge is not None:
         through = bridge.covered_through_month
+        # Name the index the bridge actually used - PPI where one is available, CPI
+        # only as the fallback - and describe what that index measures, because the
+        # strength of the assumption depends on which one it is.
+        price_label = (
+            "producer price index" if bridge.kind == "PPI" else "consumer price index"
+        )
         detail = (
             f"Index freshness: the last published {tpi.series_name} observation is "
             f"{tpi.resolved_quarter}. To price {tpi.requested_quarter} the index was carried "
-            f"forward to {through} using the observed change in the {bridge.series_name} consumer "
-            f"price index between {bridge.from_months[0]}"
+            f"forward to {through} using the observed movement in the {bridge.series_name} "
+            f"{price_label} between {bridge.from_months[0]}"
             f"{'-' + bridge.from_months[-1] if len(bridge.from_months) > 1 else ''} "
             f"({bridge.from_value:.3f}) and {bridge.to_months[0]}"
             f"{'-' + bridge.to_months[-1] if len(bridge.to_months) > 1 else ''} "
             f"({bridge.to_value:.3f}) - a factor of {bridge.factor:.4f}. This bridge is a MODELLED "
-            f"step, not a construction cost observation: consumer prices are not construction "
-            f"costs. Every line it touches is basis='assumed' and flagged cpi_bridged, and the "
+            f"step, not a construction cost observation"
+            + (
+                ": producer prices measure what suppliers charge for the commodity baskets a "
+                "construction rate is made of, which makes them the closest published proxy for "
+                "the movement being estimated."
+                if bridge.kind == "PPI"
+                else ": consumer prices measure what households pay, not what is bought for a "
+                "building, so this is the weaker of the two available proxies and is used only "
+                "because no producer series spans this window."
+            )
+            + " Every line it touches is basis='assumed' and flagged index_bridged, and the "
             f"step is shown separately in the waterfall."
         )
         if bridge.partial:
@@ -1031,66 +1050,85 @@ def build_benchmark(
             )
         if bridge.short:
             detail += (
-                f" The CPI is published only to {through}, which is "
+                f" {bridge.series_name} was published only to {through}, which is "
                 f"{bridge.shortfall_months} month(s) short of the end of {tpi.requested_quarter}; "
-                f"the index is therefore current to {through}, not to the quarter end."
+                f"the index is therefore derived to {through}, not to the quarter end."
             )
         if bridge.is_placeholder:
             detail += (
-                " The CPI series used for the bridge is itself a SYNTHETIC PLACEHOLDER "
-                f"({bridge.replace_with})."
+                f" The {bridge.series_name} series used for the bridge is itself indicative rather "
+                f"than a published observation ({bridge.replace_with})."
             )
         warns.append(detail)
-    elif tpi.fallback_used and (index_bridge or BRIDGE_CPI).strip().lower() != BRIDGE_NONE:
+    elif tpi.fallback_used and (index_bridge or BRIDGE_AUTO).strip().lower() != BRIDGE_NONE:
         reason_text = {
-            "no_cpi_series_configured_for_country": (
-                "No consumer price series is configured for this market"
+            "no_price_series_configured_for_country": (
+                "No producer or consumer price series is configured for this market"
             ),
-            "no_cpi_observations_loaded": "No consumer price observations are loaded",
+            "no_price_observations_loaded": "No monthly price observations are loaded",
+            "no_cpi_series_configured_for_country": (
+                "No producer or consumer price series is configured for this market"
+            ),
+            "no_cpi_observations_loaded": "No monthly price observations are loaded",
+            "no_price_observation_for_the_observation_quarter": (
+                "No price series has an observation for the index quarter"
+            ),
             "no_cpi_observation_for_the_observation_quarter": (
-                "The consumer price series has no observation for the index quarter"
+                "No price series has an observation for the index quarter"
+            ),
+            "no_price_observation_after_the_index_observation": (
+                "No price series has an observation after the index quarter"
             ),
             "no_cpi_observation_after_the_index_observation": (
-                "The consumer price series has no observation after the index quarter"
+                "No price series has an observation after the index quarter"
             ),
-            "no_cpi_series_covers_both_quarters": (
-                "No consumer price series loaded for this market spans both the index quarter and "
-                "the tender quarter (the publisher rebased the CPI, so the older and newer series "
+            "no_price_series_covers_both_quarters": (
+                "No price series loaded for this market spans both the index quarter and the "
+                "tender quarter (the publisher rebased the index, so the older and newer series "
                 "do not overlap and are not chained)"
             ),
-            "cpi_value_at_the_observation_quarter_is_zero": (
-                "The consumer price value at the index quarter is zero"
+            "no_cpi_series_covers_both_quarters": (
+                "No price series loaded for this market spans both the index quarter and the "
+                "tender quarter (the publisher rebased the index, so the older and newer series "
+                "do not overlap and are not chained)"
             ),
-        }.get(bridge.reason if bridge else "", "The CPI bridge could not be computed")
+            "price_value_at_the_observation_quarter_is_zero": (
+                "The price index value at the index quarter is zero"
+            ),
+            "cpi_value_at_the_observation_quarter_is_zero": (
+                "The price index value at the index quarter is zero"
+            ),
+        }.get(bridge.reason if bridge else "", "The index bridge could not be computed")
         warns.append(
             f"Index freshness: {reason_text.lower()}, so the {tpi.resolved_quarter} "
             f"{tpi.series_name} observation was held unchanged for {tpi.requested_quarter} "
-            f"instead of being carried forward. The index is therefore stale by "
-            f"{tpi.lag_quarters} quarter(s). Load a monthly CPI series for this market "
-            f"(python -m app.importer --kind cpi) to bridge it."
+            f"instead of being carried forward - the index is therefore stale by "
+            f"{tpi.lag_quarters} quarter(s). Load a monthly producer price series for this market "
+            f"(python -m app.importer --kind price_series) to bridge it."
         )
-    if (index_bridge or BRIDGE_CPI).strip().lower() == BRIDGE_NONE and tpi.lag_quarters > 0:
+    if (index_bridge or BRIDGE_AUTO).strip().lower() == BRIDGE_NONE and tpi.lag_quarters > 0:
         warns.append(
-            f"Index freshness: the CPI bridge is switched OFF for this run. The "
+            f"Index freshness: the index bridge is switched OFF for this run. The "
             f"{tpi.resolved_quarter} {tpi.series_name} observation was held unchanged for "
             f"{tpi.requested_quarter} ({tpi.lag_quarters} quarter(s) stale)."
         )
     if bridged:
         assumes.append(
             f"ASSUMED (modelled): the {tpi.series_name} index for {tpi.requested_quarter} is not a "
-            f"published observation. It is the last published observation "
-            f"({tpi.resolved_quarter} = {tpi.value_published:.4f}) scaled by the observed change "
-            f"in {bridge.series_name} ({bridge.base_year} = {bridge.base_value:.0f}) from "
+            f"published observation. It is derived by carrying the last published observation "
+            f"({tpi.resolved_quarter} = {tpi.value_published:.4f}) forward along the observed "
+            f"movement in {bridge.series_name} ({bridge.base_year} = {bridge.base_value:.0f}) from "
             f"{bridge.from_value:.4f} to {bridge.to_value:.4f}, giving "
-            f"{tpi.value:.4f} ({bridge.factor:+.4f} factor). Source of the CPI: "
-            f"{bridge.source_url or 'not stated'}. Consumer prices are not construction costs, so "
-            f"this step is an assumption, not evidence. TODO: replace with the published "
-            f"{tpi.series_name} observation for {tpi.requested_quarter} when it is released."
+            f"{tpi.value:.4f} ({bridge.factor:+.4f} factor). Source of the bridged index: "
+            f"{bridge.source_url or 'not stated'}. The bridged index therefore shows the trend to "
+            f"date, not a tender-quarter observation, so this step is an assumption rather than "
+            f"evidence. TODO: replace with the published {tpi.series_name} observation for "
+            f"{tpi.requested_quarter} when it is released."
         )
     if tpi.is_placeholder:
         warns.append(
-            f"TPI series {tpi.series_name} {tpi.resolved_quarter} is a SYNTHETIC PLACEHOLDER "
-            f"(is_placeholder = true). {tpi.replace_with}"
+            f"TPI series {tpi.series_name} {tpi.resolved_quarter} is an INDICATIVE SEED value "
+            f"(is_placeholder = true), not a published observation. {tpi.replace_with}"
         )
     for section, phrase in sorted(exclusion_hits.items()):
         warns.append(
@@ -1122,7 +1160,7 @@ def build_benchmark(
         warns.append(
             f"Regional adjustment: {region.region_name} ({region.region_code}) carries a "
             f"{region.factor:.3f} multiplier on every benchmark base rate, and that multiplier is "
-            f"a PLACEHOLDER estimate, not a published city index. {region.replace_with}"
+            f"an INDICATIVE estimate, not a published city index. {region.replace_with}"
         )
     assumes.append(
         f"ASSUMED: benchmark base rates are multiplied by {region.factor:.3f} for "
@@ -1233,6 +1271,7 @@ def build_benchmark(
                     tpi_fallback_used=tpi.fallback_used,
                     tpi_bridged=bridged,
                     cpi_bridge_factor=round(tpi.bridge_factor, 6),
+                    index_bridge_kind=(bridge.kind if bridged and bridge else ""),
                     cpi_series_name=(bridge.series_name if bridged and bridge else ""),
                     cpi_month_used=(bridge.covered_through_month or "") if bridged and bridge else "",
                     cpi_value_used=(round(bridge.to_value, 4) if bridged and bridge else None),
@@ -1319,7 +1358,7 @@ def build_benchmark(
         if manual is None and rate_row is not None and rate_row.is_placeholder:
             flags.append("placeholder_benchmark_rate")
         if bridged:
-            flags.append("cpi_bridged")
+            flags.append("index_bridged")
         if overhead_pct:
             flags.append("overhead_applied")
         if margin_pct:
@@ -1380,6 +1419,7 @@ def build_benchmark(
                 tpi_fallback_used=tpi.fallback_used,
                 tpi_bridged=bridged,
                 cpi_bridge_factor=round(tpi.bridge_factor, 6),
+                index_bridge_kind=(bridge.kind if bridged and bridge else ""),
                 cpi_series_name=(bridge.series_name if bridged and bridge else ""),
                 cpi_month_used=(bridge.covered_through_month or "") if bridged and bridge else "",
                 cpi_value_used=(round(bridge.to_value, 4) if bridged and bridge else None),
@@ -1592,10 +1632,11 @@ def build_benchmark(
         l.provenance and l.provenance.get("is_placeholder") for l in lines
     ):
         assumes.append(
-            f"ASSUMED: benchmark rates and index values in this run are SYNTHETIC PLACEHOLDERS "
-            f"for {registry.name}. Every affected row carries is_placeholder = true and a TODO "
-            f"naming the source it must be replaced from. Do not use these figures for a real "
-            f"tender decision."
+            f"ASSUMED: some benchmark rates and index values in this run are INDICATIVE for "
+            f"{registry.name} rather than published observations - they are derived to show the "
+            f"trend to date against the named source. Every affected row carries "
+            f"is_placeholder = true and a TODO naming the publication it must be replaced from. "
+            f"Do not use these figures for a real tender decision."
         )
 
     index_bridge_summary = (
@@ -1605,8 +1646,8 @@ def build_benchmark(
             "applied": False,
             "reason": "index_observation_covers_requested_quarter",
             "mode": (
-                BRIDGE_CPI
-                if (index_bridge or BRIDGE_CPI).strip().lower() != BRIDGE_NONE
+                BRIDGE_AUTO
+                if (index_bridge or BRIDGE_AUTO).strip().lower() != BRIDGE_NONE
                 else BRIDGE_NONE
             ),
             "series_name": tpi.series_name,
@@ -1634,7 +1675,7 @@ def build_benchmark(
     )
     index_bridge_summary["index_series"] = tpi.series_name
     index_bridge_summary["requested_bridge_mode"] = (
-        BRIDGE_CPI if (index_bridge or BRIDGE_CPI).strip().lower() != BRIDGE_NONE else BRIDGE_NONE
+        BRIDGE_AUTO if (index_bridge or BRIDGE_AUTO).strip().lower() != BRIDGE_NONE else BRIDGE_NONE
     )
     index_bridge_summary["index_observation_is_placeholder"] = tpi.is_placeholder
 

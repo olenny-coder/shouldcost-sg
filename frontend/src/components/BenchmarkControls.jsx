@@ -1,4 +1,8 @@
 import React from 'react'
+import {
+  bridgeFactor, bridgeFromMonths, bridgeFromValue, bridgeKind, bridgeKindLong,
+  bridgeReason, bridgeSeries, bridgeToMonths, bridgeToValue,
+} from '../bridge.js'
 
 function quarterIndex(quarter) {
   const match = /^(\d{4})Q([1-4])$/.exec(String(quarter || ''))
@@ -17,19 +21,6 @@ function fmtMonths(months) {
   return months[0] + '-' + months[months.length - 1]
 }
 
-function bridgeReason(reason) {
-  const map = {
-    no_cpi_series_configured_for_country: 'no consumer price series is configured for this market',
-    no_cpi_observations_loaded: 'no consumer price observations are loaded',
-    no_cpi_observation_for_the_observation_quarter: 'the CPI has no observation for the index quarter',
-    no_cpi_observation_after_the_index_observation: 'the CPI has no observation after the index quarter',
-    no_cpi_series_covers_both_quarters: 'no loaded CPI series spans both quarters',
-    cpi_value_at_the_observation_quarter_is_zero: 'the CPI value at the index quarter is zero',
-    index_observation_covers_requested_quarter: 'the index already covers the tender quarter',
-  }
-  return map[reason] || 'no CPI bridge was available'
-}
-
 /** Tender quarter + TPI series selector. Changing either re-runs the benchmark live. */
 export default function BenchmarkControls(props) {
   const disabled = !props.uploadId || props.loading
@@ -44,11 +35,14 @@ export default function BenchmarkControls(props) {
     if (selected === null || published === null || selected <= published) return quarter
     const stale = selected - published
     if (props.bridgeMode === 'none') return quarter + ' \u00b7 index held, ' + stale + 'q stale'
-    // Bridging needs a consumer price series with an observation after the index.
-    const bridgeable = !props.freshness || props.freshness.cpi_series_available !== false
-    return bridgeable
-      ? quarter + ' \u00b7 index bridged with CPI'
-      : quarter + ' \u00b7 index held, no CPI loaded'
+    // The bridge needs a price series with an observation after the index. It takes
+    // a producer index where the market publishes one, otherwise the consumer one.
+    const producer = !!(props.freshness && props.freshness.ppi_series_available)
+    const consumer = !props.freshness || props.freshness.cpi_series_available !== false
+    if (producer) return quarter + ' \u00b7 index carried forward with PPI'
+    return consumer
+      ? quarter + ' \u00b7 index carried forward with CPI'
+      : quarter + ' \u00b7 index held, no price series loaded'
   }
 
   return (
@@ -115,12 +109,14 @@ export default function BenchmarkControls(props) {
         <label>
           Stale index
           <select
-            value={props.bridgeMode || 'cpi'}
+            value={props.bridgeMode || 'auto'}
             onChange={function (e) { props.onChange({ bridgeMode: e.target.value }) }}
             disabled={disabled}
-            title="How an index that has not published the tender quarter yet is brought up to date."
+            title="How an index that has not published the tender quarter yet is carried forward to it."
           >
-            <option value="cpi">Bridge with CPI (to the tender quarter)</option>
+            <option value="auto">Carry forward with PPI, CPI as fallback</option>
+            <option value="ppi">Carry forward with a producer price index only</option>
+            <option value="cpi">Carry forward with a consumer price index only</option>
             <option value="none">Hold the last published observation</option>
           </select>
         </label>
@@ -143,20 +139,22 @@ export default function BenchmarkControls(props) {
             <>
               the {props.indexBridge.index_series} series last published{' '}
               <strong>{props.indexBridge.observation_quarter}</strong> - {props.indexBridge.lag_quarters}{' '}
-              quarter(s) before {props.indexBridge.requested_quarter}. The index was carried forward
-              to <strong>{props.indexBridge.bridged_through_month}</strong> using the observed change
-              in <strong>{props.indexBridge.cpi_series_name}</strong> (
-              {fmtMonths(props.indexBridge.cpi_from_months)} {fmtNum(props.indexBridge.cpi_from_value)}
+              quarter(s) before {props.indexBridge.requested_quarter}. It was carried forward to{' '}
+              <strong>{props.indexBridge.bridged_through_month}</strong> along the published trend of{' '}
+              <strong>{bridgeSeries(props.indexBridge)}</strong>{' '}
+              ({bridgeKindLong(bridgeKind(props.indexBridge))},{' '}
+              {fmtMonths(bridgeFromMonths(props.indexBridge))} {fmtNum(bridgeFromValue(props.indexBridge))}
               {' \u2192 '}
-              {fmtMonths(props.indexBridge.cpi_to_months)} {fmtNum(props.indexBridge.cpi_to_value)}),
-              a factor of <strong>{fmtNum(props.indexBridge.cpi_bridge_factor, 4)}</strong>: index{' '}
+              {fmtMonths(bridgeToMonths(props.indexBridge))} {fmtNum(bridgeToValue(props.indexBridge))}),
+              a factor of <strong>{fmtNum(bridgeFactor(props.indexBridge), 4)}</strong>: index{' '}
               {fmtNum(props.indexBridge.index_value_published, 2)} becomes{' '}
               {fmtNum(props.indexBridge.index_value_used, 2)}.{' '}
-              <span className="badge basis-assumed">modelled - basis assumed</span>{' '}
+              <span className="badge basis-assumed">derived - basis assumed</span>{' '}
               {props.indexBridge.shortfall_months > 0
-                ? 'The CPI is published only to ' + props.indexBridge.bridged_through_month + ', so the index is current to that month, not the quarter end. '
+                ? bridgeSeries(props.indexBridge) + ' is published only to ' + props.indexBridge.bridged_through_month + ', so the index is derived to that month, not the quarter end. '
                 : ''}
-              This is not a published construction cost observation - see the assumptions panel.
+              This shows the trend to date and is not a published construction cost observation - see
+              the assumptions panel.
             </>
           ) : (
             <>
@@ -174,14 +172,20 @@ export default function BenchmarkControls(props) {
 
       {props.freshness ? (
         <p className="muted small">
-          <strong>Data as at:</strong> CPI ({props.freshness.cpi_series_name}) published to{' '}
+          <strong>Data as at:</strong>{' '}
+          {props.freshness.ppi_series_available
+            ? 'PPI (' + props.freshness.ppi_series_name + ') published to '
+              + (props.freshness.ppi_latest_month || 'n/a') + '. '
+            : ''}
+          CPI ({props.freshness.cpi_series_name}) published to{' '}
           <strong>{props.freshness.cpi_latest_month || 'n/a'}</strong>
           {props.freshness.cpi_latest_value !== null && props.freshness.cpi_latest_value !== undefined
             ? ' = ' + fmtNum(props.freshness.cpi_latest_value, 3)
             : ''}
           {props.freshness.cpi_base_year ? ' (base ' + props.freshness.cpi_base_year + ' = 100)' : ''}.{' '}
-          {(props.freshness.series || []).length} index series loaded; the stale ones are bridged to
-          the quarter being priced. See the Index dashboard for the per-series view.
+          {(props.freshness.series || []).length} index series loaded; the stale ones are carried
+          forward along the published trend to the quarter being priced. See the Index dashboard for
+          the per-series view.
         </p>
       ) : null}
 
@@ -192,7 +196,7 @@ export default function BenchmarkControls(props) {
           <strong>{props.activeRegion.factor.toFixed(3)}</strong> for{' '}
           {props.activeRegion.region_name}. Source: {props.activeRegion.source}.
           {props.activeRegion.is_placeholder
-            ? ' This multiplier is a PLACEHOLDER estimate — the published city index has not been licensed yet, so it is disclosed as an assumption on every affected line.'
+            ? ' This multiplier is an INDICATIVE estimate — the published city index has not been licensed yet, so it is disclosed as an assumption on every affected line.'
             : ''}
         </p>
       ) : null}

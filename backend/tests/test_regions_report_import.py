@@ -120,7 +120,7 @@ def test_the_region_is_disclosed_in_the_assumptions(session) -> None:
 def test_a_placeholder_region_factor_raises_a_warning(session) -> None:
     result = _run(session, region="MUM")
     assert result.regional_factor_is_placeholder is True
-    assert any("PLACEHOLDER estimate" in w for w in result.warnings)
+    assert any("INDICATIVE estimate" in w for w in result.warnings)
 
 
 def test_the_delhi_region_does_not_mark_lines_assumed(session) -> None:
@@ -252,7 +252,7 @@ def test_report_contains_warnings_assumptions_and_sources(client_module, session
     rows = _report(client_module, _upload_id(session, IN_SAMPLE))
     assumptions = [r["value"] for r in rows if r["block"] == "assumption"]
     assert any("Regional" in a or "1.128" in a for a in assumptions)
-    assert any("SYNTHETIC PLACEHOLDERS" in a for a in assumptions)
+    assert any("INDICATIVE" in a and "trend to date" in a for a in assumptions)
     assert [r for r in rows if r["block"] == "warning"]
     sources = {r["ref"] for r in rows if r["block"] == "source"}
     assert any("Wholesale Price Index" in s for s in sources)

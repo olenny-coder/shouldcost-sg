@@ -82,6 +82,8 @@ export const api = {
   listPriceSeries: function (params) { return unwrap(http.get('/api/indices/price-series', { params: params })); },
   listCpi: function (params) { return unwrap(http.get('/api/indices/price-series', { params: params })); },
   indexFreshness: function (params) { return unwrap(http.get('/api/indices/freshness', { params: params })); },
+  // Which published series re-prices which measurement section, and where the gaps are.
+  indexCoverage: function (params) { return unwrap(http.get('/api/indices/coverage', { params: params })); },
   listMaterials: function (params) { return unwrap(http.get('/api/indices/materials', { params: params })); },
   listBenchmarkRates: function (params) { return unwrap(http.get('/api/indices/benchmark-rates', { params: params })); },
   listRegions: function (params) { return unwrap(http.get('/api/indices/regions', { params: params })); },

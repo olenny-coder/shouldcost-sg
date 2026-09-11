@@ -230,10 +230,12 @@ def test_real_data_is_labeled_as_real_and_carries_provenance(client_module) -> N
         assert row["source_url"].startswith("https://eaindustry.nic.in/")
         assert row["replace_with"] == ""
 
-    placeholders = [r for r in client_module.get("/api/indices/tpi?country=SG").json()]
-    for row in placeholders:
+    # Rows that are NOT published data are labelled as indicative seed values and
+    # still name the publication they stand in for.
+    indicative = [r for r in client_module.get("/api/indices/tpi?country=SG").json()]
+    for row in indicative:
         assert row["replace_with"].startswith("# TODO:")
-        assert "PLACEHOLDER" in row["provenance_note"]
+        assert row["provenance_note"].startswith("INDICATIVE.")
 
 
 def test_material_series_declares_index_or_price(client_module) -> None:

@@ -47,7 +47,7 @@ def _instructions(country: Country) -> list[list[str]]:
         ["Unit convention", country.unit_convention],
         [""],
         ["HOW TO USE THIS TEMPLATE"],
-        ["1", "Delete the example rows once you have added your own. They are marked is_placeholder = true."],
+        ["1", "Delete the example rows once you have added your own. They are marked is_placeholder = true, meaning indicative seed values rather than a licensed schedule of rates."],
         ["2", "description is mandatory and is what the classifier reads. Use the wording of your own bill."],
         ["3", "unit is mandatory. Accepted: m, m2, m3, t/tonne, item/sum/nos. Aliases such as SQM and CUM are understood."],
         ["4", "quantity and rate are mandatory numbers. Commas as thousand separators are tolerated."],
@@ -62,7 +62,7 @@ def _instructions(country: Country) -> list[list[str]]:
         ["is_placeholder", "true when the row is synthetic demonstration data."],
         ["replace_with", "The value or source that must replace this row before it is used for a real decision."],
         [""],
-        ["CREDIBLE SOURCES FOR THIS MARKET (values in this app are synthetic placeholders)"],
+        ["CREDIBLE SOURCES FOR THIS MARKET"],
         *[[s.name, s.url, s.what] for s in country.sources],
     ]
 

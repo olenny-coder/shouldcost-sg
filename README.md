@@ -5,16 +5,19 @@ Quantities, get every line classified to a measurement section, re-priced agains
 library adjusted by a published cost index, and reported as variance, section subtotals, a
 reconciliation **waterfall** and a **sensitivity analysis**.
 
-| Market | Measurement standard | Currency | Index series | Monthly CPI used to bridge a stale index |
+| Market | Measurement standard | Currency | Index series | Price index used to carry a stale index forward |
 |---|---|---|---|---|
-| Singapore | **SMM2** (Standard Method of Measurement, 2nd Ed.) | SGD | BCA, HDB, RLB, AECOM (placeholder values) | **SingStat CPI, All Items** (2024 = 100) - **real** |
-| India | **IS 1200** + **CPWD DSR** chapter structure | INR | CPWD, NBO (placeholder), WPI-CONST/CEM/STL/RMC (real) | **MoSPI CPI, Combined, All-India** (2024 = 100 together with the publisher's own back-cast months, plus the non-overlapping 2012-based predecessor) - **real** |
+| Singapore | **SMM2** (Standard Method of Measurement, 2nd Ed.) | SGD | BCA, HDB, RLB, AECOM (indicative seed values) | no usable **PPI** (documented gap), so the **SingStat CPI, All Items** (2024 = 100) - **real** |
+| India | **IS 1200** + **CPWD DSR** chapter structure | INR | CPWD, NBO (indicative seed values with the licensed DSR), WPI-CONST/CEM/STL/RMC (real) | **OEA producer price index, 16 commodity baskets** (2022-23 = 100) - **real** - with the **MoSPI CPI, Combined, All-India** as fallback |
 
 Published construction cost indexes lag the tender quarter - the BCA series is a quarterly release and
-the WPI appears about two months after the month it describes, while the CPI is monthly. So the app
-carries the last published index observation forward to the quarter being priced using the observed
-CPI movement, and discloses that step as an assumption on every affected line. See
-[Keeping the indexes current](#keeping-the-indexes-current-the-cpi-bridge).
+the WPI appears about two months after the month it describes, while the producer and consumer price
+indexes are monthly. So the app carries the last published index observation forward along the
+published **trend to date** of a price index, and discloses that step as an assumption on every
+affected line. A **producer price index is used first** - it measures what suppliers actually charge
+for the cement, steel, minerals, fuel and power a construction rate is made of - and a consumer price
+index is the fallback. See
+[Keeping the indexes current](#keeping-the-indexes-current-ppi-first-cpi-as-fallback).
 
 Split stack, designed for managed hosting:
 
@@ -165,8 +168,10 @@ python tools/verify_seed_data.py   # re-derives every seeded value from the raw 
 **What is deliberately still synthetic, and why.** The *indexes* can be real because governments
 publish them. The *benchmark unit rates* cannot: the CPWD Delhi Schedule of Rates, the state PWD
 schedules and BCA Construction InfoNet are all licensed publications. Shipping a plausible-looking
-rupee rate per SMM2 section would be inventing data. Those 20 rows stay placeholders with a named
-target, and the app is honest about it on every screen.
+rupee rate per SMM2 section would be inventing data. Those 20 rows therefore stay **indicative seed
+values** with a named target, each carrying `is_placeholder: true`, a `source_url` and a
+`# TODO: replace with actual <source> <period>` marker, and the app says so on every screen that
+shows them.
 
 ### Refreshing with real data
 
@@ -185,11 +190,11 @@ python -m app.importer --kind tpi --file ../wpi_quarters.csv \
 `--kind` accepts `tpi`, `materials`, `benchmark_rates`, `regions` or `cpi`. Importing forces
 `is_placeholder: false`, stores your provenance note, clears `replace_with`, and upserts on the
 natural key - so re-importing a refreshed file is idempotent. **`--provenance` is mandatory**: a
-real-looking number with no stated origin is worse than an honest placeholder.
+real-looking number with no stated origin is worse than an honestly labelled indicative value.
 
 ---
 
-## Keeping the indexes current: the CPI bridge
+## Keeping the indexes current: PPI first, CPI as fallback
 
 A tender is priced at a quarter. The index series you select may not have published that quarter
 yet. Before this feature the app simply fell back to the nearest prior observation and said so, which
@@ -197,52 +202,95 @@ left every recent tender priced at an out-of-date index level. Now the gap is cl
 
 ```
 index_value(tender quarter) = index_value(last observed quarter)
-                              x cpi(covered through) / cpi(last observed quarter)
+                              x price_index(covered through) / price_index(last observed quarter)
 ```
 
-* Both CPI endpoints are the **mean of the months available in that quarter** - the same convention
-  the India WPI quarters are built with - so a quarter that is only partly published still works.
-* The bridge **never runs past the latest published CPI month**. If the tender quarter is later than
-  that, the index is carried forward as far as real data allows and the response reports
+`price_index` is a **producer** price index wherever the market publishes one, and a **consumer**
+price index only where it does not.
+
+* **Producer indices come first.** A PPI measures what manufacturers and utilities charge for the
+  commodity baskets a construction rate is built from, so it is the closest published proxy for the
+  movement being estimated. India publishes 16 construction-relevant baskets monthly (cement,
+  aggregate, limestone, iron and steel, castings, foundries, wood, plastics, paints, cable, electrical
+  machinery, petroleum products, electricity, and the all-commodities composite), all on base
+  2022-23 = 100. The registry's `default_ppi_series` names the preferred one and the others are
+  tried in turn.
+* **The consumer index is the fallback**, reached only when no producer series spans both endpoints -
+  as in Singapore, which publishes no machine-readable commodity-level PPI. A bridged line therefore
+  reports which kind carried it (`index_bridge_kind`, `kind` in `index_bridge`), and the warning and
+  assumption text say which, because the strength of the assumption differs between the two.
+* `"index_bridge"` accepts **`auto`** (the default: PPI then CPI), **`ppi`**, **`cpi`** and
+  **`none`**. The UI's **Stale index** selector exposes all four.
+* Both endpoints are the **mean of the months available in that quarter** - the same convention the
+  India WPI quarters are built with - so a quarter that is only partly published still works.
+* The bridge **never runs past the latest published month of the series it is using**. If the tender
+  quarter is later than that, the index is derived as far as real data allows and the response reports
   `shortfall_months` plus a warning saying the index is current to a month short of the quarter end.
 * It is **switched off** with `"index_bridge": "none"` on the benchmark request, or with the
   **Stale index** selector in the UI. The last observation is then held unchanged and a warning
   states how stale the index is.
 * An **absolute index override replaces the bridged level**: your override always wins, and the
   bridge step in the waterfall falls to zero.
-* A market may carry **more than one consumer price series**, and the engine picks the one that spans
-  the bridge. India carries MoSPI's **current base 2024 = 100** series - which the publisher issues
-  together with its own **back-cast** months on that base, so it reaches back to 2023-01 - plus the
-  **predecessor base 2012 = 100** series, which ends at 2025-12 and does **not** overlap the current
-  one (196.5 on the old base against ~103 on the new one for adjacent months). The registry's declared
-  series is tried first, then any other series loaded for that market, and the first one that spans
-  **both** endpoints wins.
+* A market may carry **more than one series of a kind**, and the engine picks the one that spans
+  the bridge. India carries MoSPI's **current base 2024 = 100** consumer series - which the publisher
+  issues together with its own **back-cast** months on that base, so it reaches back to 2023-01 - plus
+  the **predecessor base 2012 = 100** series, which ends at 2025-12 and does **not** overlap the
+  current one (196.5 on the old base against ~103 on the new one for adjacent months). The registry's
+  declared series for each kind is tried first, then any other series of that kind, and the first one
+  that spans **both** endpoints wins.
 * Series are **never chained or spliced across a base change**. Without the publisher's official
   linking factor, a splice would invent a level shift. If no single series covers both quarters the
-  bridge reports `no_cpi_series_covers_both_quarters` (or the specific coverage reason), names what
+  bridge reports `no_price_series_covers_both_quarters` (or the specific coverage reason), names what
   each candidate covered, and the run falls back to holding the last observation.
 * The **back-cast months are labelled as such** in each row's `provenance_note`, because they are the
   publisher's own re-estimation on the new base rather than a measurement first published on it.
 
-Why it is an assumption and not a measurement: consumer prices are not construction costs. A
-construction cost index moves with steel, cement, labour, plant and productivity; the CPI moves with
-a household consumption basket that includes food, housing, transport and services. Bridging one with
-the other is a **modelled** step, so:
+Why it is a modelled step and not a measurement, whichever kind is used. Even a producer basket is
+not the construction cost index itself: it prices the material content of a section and no part of
+its labour, plant or productivity. And a consumer basket is a still weaker proxy, because it moves
+with household consumption - food, housing, transport, services - rather than with what is bought for
+a building. Either way the bridged value is **derived to show the trend to date**, so:
 
-* every bridged line is `basis: "assumed"` and flagged `cpi_bridged`,
+* every bridged line is `basis: "assumed"` and flagged `index_bridged`,
 * the bridge is its **own step in the waterfall** (`cpi_bridge`, basis `assumed`), always zero when
   no bridging took place, so a bridged run and an observed run are directly comparable,
 * it is restated in `assumptions[]` with the months, values, factor and source URL, and
 * the response carries an `index_bridge` block (also written into the CSV report) with the published
   value, the bridged value, the lag in quarters and a machine-readable reason when no bridge ran.
 
-The engine never invents the CPI either: if no consumer price series is loaded for the market, the
+The engine never invents a price index either: if no usable series is loaded for the market, the
 bridge degrades to "hold the last observation" plus a warning naming the reason, and the run still
 completes.
 
 `GET /api/indices/freshness` reports the same machinery without running a benchmark: per series, the
-last published quarter, the lag against a reference quarter, and the CPI-bridged value the engine
-would use. The **index dashboard** renders it as a table, next to a chart of the CPI series itself.
+last published quarter, the lag against a reference quarter, the kind and name of the index that
+would carry it, and `bridge_preference` (`producer` | `consumer` | `none`). The **index dashboard**
+renders it as a table, next to charts of both the producer and the consumer series.
+
+### Which sections the published data actually covers
+
+`GET /api/indices/coverage` answers the question the freshness table raises: **for every canonical
+measurement section, which published series re-prices it, and where is the gap?** It is read from the
+database, so it reports what is loaded rather than what is intended. Each row carries a status:
+
+| Status | Meaning |
+|---|---|
+| `producer_covered` | a loaded producer index names this section in its `scope_sections` |
+| `producer_plus_labour_gap` | the materials and fuel are indexed; site labour is not, by any publication |
+| `consumer_only` | no producer basket maps here, so the weaker consumer proxy is used |
+| `uncovered` | nothing loaded re-prices the section - the benchmark holds it at base year |
+
+Two kinds of gap are deliberately distinguished, because they are not the same thing. An **uncovered
+section** is fixable by wiring in another published series. A **labour gap** is structural: no price
+index on earth measures site labour, which is 25-40% of a building rate, so a labour-dominated
+section's escalation is a floor rather than a full cost movement. Each section also names the credible
+publication that would close its gap and whether it is `wired`, `partial` or a documented `gap` -
+the CPI-IW from the Labour Bureau and the CPWD DSR for India, BCA InfoNet and the SISV circulars for
+Singapore.
+
+As loaded, **all ten canonical India sections are covered by a published producer index**, including
+Excavation, which was the last one with no coverage at all until the Petroleum Products basket (diesel,
+the direct running cost of plant) was wired in. Singapore has no producer coverage, and says so.
 
 ---
 
@@ -314,10 +362,10 @@ On the seeded India sample at 2024Q4, moving the region alone moves the answer a
 
 Two things about the multipliers are worth being blunt about:
 
-1. **They are placeholders.** CPWD publishes a city-wise cost index and NBO publishes city building
-   cost indices, but neither was available in machine-readable form here. Each region's row carries
-   the source it should come from and a `# TODO`. A placeholder factor that is not 1.0 raises a
-   named warning on every run.
+1. **They are indicative seed values.** CPWD publishes a city-wise cost index and NBO publishes city
+   building cost indices, but neither was available in machine-readable form here. Each region's row
+   carries the source it should come from and a `# TODO`. An indicative factor that is not 1.0
+   raises a named warning on every run.
 2. **It is one blended factor, not a material/labour split.** Labour-heavy sections (Formwork,
    Plaster, Masonry, Preliminaries) are more regionally variable than material-driven ones
    (Concrete, Reinforcement). The single multiplier is a simplification, and it is stated in
@@ -353,7 +401,7 @@ full_rate     = adjusted_benchmark_rate * (1 + overhead_pct / 100) * (1 + margin
 
 `full_rate` is the rate that produces a **full commercial should-cost**; see "Overheads and margin"
 below. Every one of these inputs is an assumption, so any line they touch is reported with
-`basis: "assumed"` and flagged (`cpi_bridged`, `user_adjusted`, `overhead_applied`,
+`basis: "assumed"` and flagged (`index_bridged`, `user_adjusted`, `overhead_applied`,
 `margin_applied`).
 
 ---
@@ -486,25 +534,42 @@ compatibility; `classification_standard` carries the truth.
 
 ---
 
-## Seed data and the placeholder policy
+## Seed data: published observations, derived figures, indicative seeds
 
-Each seeded row declares which of the two things it is, and the split is stated here rather than
-implied. **Placeholder rows** (the construction cost indexes and the rate library) are synthetic and
-carry:
+Every seeded row declares which of the three things it is, and the split is stated here rather than
+implied. The API carries one boolean for it - `is_placeholder` - because that is what the row-level
+contract requires; the UI never uses the word, because "not a published observation" covers three
+genuinely different situations that deserve different labels:
+
+| | Flag | What it is | How the UI labels it |
+|---|---|---|---|
+| **Published** | `is_placeholder: false` | the number is printed in the named publication | *published* |
+| **Derived** | computed at run time | the engine computed it from published values - most often by carrying a stale index forward along the published trend of a price index | *derived to date* / *basis: assumed* |
+| **Indicative seed** | `is_placeholder: true` | a stand-in value modelled on the published trend, because the document behind it is licensed rather than public | *indicative seed* |
+
+**Indicative seed rows** (the construction cost index quarters for BCA/HDB/RLB/AECOM/CPWD/NBO, the
+benchmark rate library and the regional multipliers) carry:
 
 * `is_placeholder: true`
 * a `source_url` naming the real publication it stands in for
 * a `replace_with` string beginning `# TODO: replace with actual <source> <period>`
 
-**Real rows** (the India WPI, all material prices, and the monthly CPI) carry `is_placeholder: false`
-and a `provenance_note` naming the publisher, the table and the transformation applied.
+**Published rows** (the India WPI quarters, all material prices, the monthly producer price indexes
+and the monthly CPI) carry `is_placeholder: false` and a `provenance_note` naming the publisher, the
+table and the transformation applied.
+
+**Derived rows are never stored**, so they cannot be mistaken for observations: the bridged index
+value, the adjusted benchmark rate, the variance, the waterfall steps and the should-cost total are
+all computed from the above on every run, and every one of them that rests on a modelled step is
+tagged `basis: assumed` in the response.
 
 | file | rows | content |
 |---|---|---|
-| `backend/data/tpi_series.csv` | 126 | **SG (32, placeholder):** BCA, HDB, RLB, AECOM - 8 quarters, base 2010 = 100. **IN (78, REAL):** WPI-CONST, WPI-CEM, WPI-STL, WPI-CEM-OPC, WPI-STL-BARS, WPI-RMC - 13 quarters, 2023Q2-2026Q2, base 2022-23 = 100. **IN (16, placeholder):** CPWD, NBO - the city cost indices |
-| `backend/data/cpi_series.csv` | 146 | **SG (55, REAL):** CPI All Items, monthly 2022-01 to 2026-07, base 2024 = 100 (SingStat table M213751). **IN (91, REAL):** CPI Combined All-India General - 43 months on the current base 2024 = 100 (2023-01, the publisher's back-cast, through 2026-07) and 48 on the predecessor base 2012 = 100 (2022-01 to 2025-12). Built by `tools/build_cpi_seed.py` |
+| `backend/data/tpi_series.csv` | 126 | **SG (32, indicative):** BCA, HDB, RLB, AECOM - 8 quarters, base 2010 = 100. **IN (78, REAL):** WPI-CONST, WPI-CEM, WPI-STL, WPI-CEM-OPC, WPI-STL-BARS, WPI-RMC - 13 quarters, 2023Q2-2026Q2, base 2022-23 = 100. **IN (16, indicative):** CPWD, NBO - the city cost indices |
+| `backend/data/price_series.csv` | 786 | **IN PPI (640, REAL): 16 producer baskets**, monthly 2023-04 to 2026-07, base 2022-23 = 100, from the Office of the Economic Adviser's published OPPI/WPI workbook. Each carries its published basket weight, the sections it may re-price in `scope_sections`, and the mapping rationale in `provenance_note`. **SG CPI (55, REAL):** All Items, monthly 2022-01 to 2026-07, base 2024 = 100 (SingStat table M213751). **IN CPI (91, REAL):** Combined All-India General - 43 months on the current base 2024 = 100 (2023-01, the publisher's back-cast, through 2026-07) and 48 on the predecessor base 2012 = 100 (2022-01 to 2025-12). Supersedes `cpi_series.csv` when the table gained a `kind` column |
+| `backend/data/cpi_series.csv` | 146 | the pre-`kind` CPI seed, retained as the input the PPI build reads and as the record of the original CPI rows |
 | `backend/data/material_prices.csv` | 180 | **SG (60, REAL):** cement, steel_rebar, aggregate, sand, ready_mix_concrete - annual 2014-2025, SGD prices. **IN (120, REAL):** cement, steel_rebar, ready_mix_concrete - monthly 2023-04 to 2026-07, INR cost INDEX (2022-23 = 100) |
-| `backend/data/benchmark_rates.csv` | 20 | the ten sections per market. SG base year 2010 (SGD), IN base year 2023 (INR). All placeholder |
+| `backend/data/benchmark_rates.csv` | 20 | the ten sections per market. SG base year 2010 (SGD), IN base year 2023 (INR). All indicative seed values, because the DSR and InfoNet schedules behind them are licensed |
 | `backend/data/regional_factors.csv` | 13 | 12 Indian cities plus Singapore, with the multiplier, its source and its limitations |
 | `backend/data/sample_boq.csv` | 20 | Singapore demonstration BoQ, SMM2 wording, SGD |
 | `backend/data/sample_boq_india.csv` | 20 | India demonstration BoQ, IS 1200 / DSR wording, INR |
@@ -584,7 +649,8 @@ connection the backend opens at runtime is to its own database.
 | `GET` | `/api/boq/{upload_id}/export` | streamed export. Query: `format`, `level` (items\|sections\|waterfall\|summary\|**report**), plus optional benchmark params |
 | `POST` | `/api/boq/{upload_id}/export` | same, but takes the full benchmark body **including index adjusters and the bridge setting** |
 | `GET` | `/api/indices/tpi` | query: `country`, `series`, `from_quarter`, `to_quarter` |
-| `GET` | `/api/indices/cpi` | query: `country`, `series`, `from_month`, `to_month`. The real monthly CPI behind the bridge |
+| `GET` | `/api/indices/price-series` | query: `country`, `series`, `from_month`, `to_month`. Every monthly price observation behind the bridge, producer and consumer alike, each with `kind` (`PPI`\|`CPI`), `title` and `scope_sections`. **Renamed from `/api/indices/cpi`** when the table gained producer rows |
+| `GET` | `/api/indices/coverage` | query: `country`. Section-by-section coverage: which published series re-prices each canonical section, its status, and the credible publication that would close each remaining gap |
 | `GET` | `/api/indices/freshness` | query: `country`, `reference_quarter`. Last published quarter per series, its lag, and the CPI-bridged value the engine would use |
 | `GET` | `/api/indices/materials` | query: `country`, `material`, `from_month`, `to_month` |
 | `GET` | `/api/indices/benchmark-rates` | query: `country`. The rate library with full provenance |
@@ -800,23 +866,29 @@ A **region selector** appears beside the index series whenever the market has mo
 (India has twelve; Singapore has one, so it is hidden). Changing it re-runs the benchmark live and
 the should-cost tile shows the region and its multiplier.
 
-The index dashboard separates **real** from **placeholder** data with a count of each and a
-per-series badge, so you can see at a glance which numbers came from a government publication and
-which are still waiting to be licensed.
+The index dashboard separates **published** data from data that is **derived** or an **indicative
+seed**, with a count of each and a per-series badge, so you can see at a glance which numbers came
+from a government publication, which the engine computed from them, and which are still waiting to be
+licensed. Its **section coverage** table goes further and states, for every canonical section, which
+published series re-prices it and where the gap is - including the structural gap that no price index
+measures site labour.
 
 ### Index currency in the UI
 
 * The **tender quarter selector** offers every quarter up to the current calendar quarter, not just
   the ones the index has published. A quarter beyond the last published observation is labelled
-  `2026Q3 - index bridged with CPI`, or `- index held, 7q stale` when bridging is switched off.
-* A **Stale index** selector next to it chooses between *bridge with CPI* and *hold the last
-  published observation*.
-* The **benchmark parameters** panel states the published quarter, the lag, the CPI months and values
-  used, the factor, and the resulting index level - before you read any number derived from it.
+  `2026Q3 - index carried forward with PPI` (or `with CPI` for a market with no usable producer
+  index), or `- index held, 7q stale` when bridging is switched off.
+* A **Stale index** selector next to it chooses between *carry forward with PPI, CPI as fallback*
+  (the default), *PPI only*, *CPI only*, and *hold the last published observation*.
+* The **benchmark parameters** panel states the published quarter, the lag, which price index was used
+  and of what kind, the months and values at each endpoint, the factor, and the resulting index level -
+  before you read any number derived from it.
 * The **index currency tile** on the results grid shows the last published quarter and what it was
-  bridged to.
-* Every bridged line in the **variance table** is flagged *CPI-bridged index* and, when expanded,
-  shows the published value, the bridged value, the CPI month used, the factor and the source URL.
+  carried forward to.
+* Every bridged line in the **variance table** is flagged *index carried forward* and, when expanded,
+  shows which kind of price index was used, the published value, the derived value, the month used, the
+  factor and the source URL.
 * The **waterfall** carries the bridge as its own step, and the row explains in words what it is.
 * A newly uploaded BoQ is priced to the **current calendar quarter** by default, so a tender opened
   today is priced to date. The seeded demonstration bills keep the quarter they were calibrated for.
@@ -830,8 +902,8 @@ Collapsing is never silent - each keeps a summary strip on screen:
   never a tooltip, but you are no longer made to scroll past the same warnings on every re-run). One
   **Collapse / Expand** control folds the body away and the choice is remembered in `localStorage`;
   the header keeps the live counts ("6 warning(s), 5 assumption(s)") and the amber chips for
-  *placeholder lines*, *index bridged with CPI* and *index adjusters active*, with a one-click link
-  back to the full text. The **Warnings** and **Assumptions** lists also collapse independently.
+  *lines on an indicative seed rate*, *index carried forward with PPI* and *index adjusters active*,
+  with a one-click link back to the full text. The **Warnings** and **Assumptions** lists also collapse independently.
 * the **Classification rules** table (the effective rule table for the selected market). Collapsed,
   it still shows the measurement standard, the rule count and an
   *automated classification - review it* chip, so which vocabulary is in force - and that a
@@ -942,25 +1014,29 @@ DESKTOP - Singapore, auto-loaded on boot
   template download  : "Downloaded shouldcost-boq-template-sg.csv"
 
 DESKTOP - the same BoQ priced at 2026Q3, a quarter no construction index has published
+                       (Singapore has no usable producer index, so this market falls back to CPI)
   tender quarter list: 2026Q3 .. 2023Q1 (quarters beyond the last observation are selectable
-                       and labelled "index bridged with CPI")
-  index tile         : index currency 2024Q4 - last published observation, bridged to 2026-07
+                       and labelled "index carried forward with CPI")
+  index tile         : index currency 2024Q4 - last published observation, carried forward to 2026-07
                        with CPI-ALL (x1.0230)
-  benchmark panel    : "the BCA series last published 2024Q4 - 7 quarter(s) before 2026Q3. The index
-                       was carried forward to 2026-07 using the observed change in CPI-ALL
-                       (2024-10-2024-12 100.389 -> 2026-07 102.696), a factor of 1.0230:
-                       index 139.20 becomes 142.40. MODELLED - BASIS ASSUMED"
-  line detail        : "Index bridged with the CPI. Published observation 139.20 at 2024Q4
-                       (7 quarter(s) stale). Carried forward to 2026-07 with CPI-ALL = 102.696,
-                       a factor of 1.0230 ... basis: assumed"
+  benchmark panel    : "the BCA series last published 2024Q4 - 7 quarter(s) before 2026Q3. It was
+                       carried forward to 2026-07 along the published trend of CPI-ALL (consumer
+                       price index, 2024-10-2024-12 100.389 -> 2026-07 102.696), a factor of 1.0230:
+                       index 139.20 becomes 142.40. DERIVED - BASIS ASSUMED"
+  line detail        : "Index carried forward with the consumer price index. Published observation
+                       139.20 at 2024Q4 (7 quarter(s) stale) was carried forward to 2026-07 along the
+                       published trend of CPI-ALL (CPI) = 102.696, a factor of 1.0230. The result is
+                       derived to show the trend to date ... basis: assumed"
   waterfall          : reconciled; chips BoQ measured | Material assumed | Labour assumed |
                        Market risk derived | CPI bridge assumed | Scope derived | Unexplained derived
                        bridge row: S$55,154.79, basis assumed, method "sum(quantity x base_rate x
                        (index_ratio_used - published_tpi_ratio))"
-  index dashboard    : "Data currency and the CPI bridge" table (4 series: last published, lag,
-                       bridged to, factor, index used), CPI chart, 10 recharts surfaces
+  index dashboard    : "Data currency and the index bridge" table (4 series: last published, lag,
+                       carried forward with, factor, index used), section-coverage table (11 rows,
+                       all "no published series" for Singapore), CPI chart, 14 recharts surfaces
   assumptions panel  : Collapse -> aria-expanded false, body unmounted, strip keeps
-                       "17 placeholder line(s)" + "Show 6 warning(s) and 5 assumption(s)";
+                       "17 line(s) on an indicative seed rate" + "Show 6 warning(s) and 5
+                       assumption(s)";
                        remembered across a reload; Warnings and Assumptions blocks each collapse
   rules table        : Classification rules - SMM2, 10 rules, first rule
                        "Concrete | concrete OR grade <number>"; Collapse -> aria-expanded false,
@@ -997,16 +1073,17 @@ DESKTOP - switched to India, at the quarter the samples were calibrated for (202
 
 DESKTOP - switched to India, priced at 2026Q3 (a quarter the WPI has not published)
   market bar         : IS 1200 / CPWD DSR - rates in Indian Rupees
-  tender quarter list: 2026Q3 labeled "index bridged with CPI"
+  tender quarter list: 2026Q3 labeled "index carried forward with PPI"
   benchmark panel    : "the WPI-CONST series last published 2026Q2 - 1 quarter(s) before 2026Q3.
-                        The index was carried forward to 2026-07 using the observed change in
-                        CPI-ALL (2026-04-2026-06 106.010 -> 2026-07 107.940), a factor of 1.0182:
-                        index 92.60 becomes 94.29. MODELLED - BASIS ASSUMED"
-  KPI tiles          : BoQ INR 3,22,46,130.00 | should-cost INR 3,32,83,985.98
-                       variance -INR 10,37,855.98 (-3.12%) | 9 of 20 breaching
-                       index currency 2026Q2 - bridged to 2026-07 with CPI-ALL (x1.0182)
-  index dashboard    : "Data currency and the CPI bridge" table plus a two-series CPI coverage
-                       table (CPI-ALL base 2024 preferred, CPI-ALL-2012 fallback)
+                        It was carried forward to 2026-07 along the published trend of PPI-ALL
+                        (producer price index, 2026-04-2026-06 109.533 -> 2026-07 109.900), a factor
+                        of 1.0033: index 92.60 becomes 92.91. DERIVED - BASIS ASSUMED"
+  KPI tiles          : BoQ INR 3,22,46,130.00 | should-cost INR 3,28,09,022.51
+                       index currency 2026Q2 - carried forward to 2026-07 with PPI-ALL (x1.0033)
+  index dashboard    : "Data currency and the index bridge" table plus a section-coverage table
+                       (11 rows, 10 of them "producer index"), a 16-basket producer table with the
+                       preferred PPI-ALL charted, and a two-series CPI fallback table
+                       (CPI-ALL base 2024 preferred, CPI-ALL-2012 fallback)
 
 DESKTOP - switched to India before the CPI was loaded (the degradation path)
   benchmark panel    : "...no bridge was applied (no consumer price observations are loaded).
@@ -1124,35 +1201,42 @@ Each of these is a deliberate choice, not an oversight.
 14. **India's "material prices" are cost indices, not rupee prices.** WPI publishes index numbers.
     The `unit` column says "index (2022-23 = 100)" and the dashboard switches its heading and axis
     label accordingly, rather than showing an index in a chart captioned as a price.
-15. **The regional multipliers are placeholders.** They are the one number in this build that is
-    both influential and invented. Every row names the source it must come from, a non-1.0 factor
-    raises a warning on every run, and every line it touches is `basis: assumed`. Nothing else
-    described as real is synthetic, and nothing described as synthetic is presented as real.
+15. **The regional multipliers are indicative seed values.** They are the one number in this build
+    that is both influential and not published in machine-readable form. Every row names the source it
+    must come from, a non-1.0 factor raises a warning on every run, and every line it touches is
+    `basis: assumed`. The published index series are real, the figures the engine derives from them are
+    labelled as derived, and the indicative seed values are labelled as indicative - no row is
+    presented as something it is not.
 16. **Schema changes need a reset.** `create_all()` adds missing tables but never ALTERs an existing
     one, so a new column is invisible until the table is rebuilt: `python -m app.etl --reset` (or
     `make reset-db`). That drops every table, so **uploaded BoQs are destroyed** - reference data is
     reproducible from the CSVs, uploads are not. A real deployment wants a migration tool.
     `cpi_series` was added as a NEW table, so a plain `python -m app.etl` picks it up without a reset;
     only a change to an existing table's columns needs one.
-17. **The CPI bridge is a modelled step, and it is labelled as one everywhere.** Consumer prices are
-    not construction costs. Rather than hold a stale index (which under-prices every recent tender)
-    or silently extrapolate the index's own trend (which invents a trend the publisher never
-    published), the app bridges with a **real, dated, published** series and marks every affected line
-    `basis: assumed` with the `cpi_bridged` flag. The bridge is its own waterfall step so it can never
-    be mistaken for the observed market movement, and it can be switched off. Asserted by the
-    `test_cpi_bridge.py` suite.
-18. **The bridge stops at the last published CPI month rather than extrapolating.** If the tender
-    quarter is later than the CPI itself, the index is carried forward only as far as real data
-    allows, `shortfall_months` reports the gap, and a warning says the index is current to a month
-    short of the quarter end. Inventing the missing months is exactly the failure mode this whole
-    feature exists to avoid.
+17. **The index bridge is a modelled step, and it is labelled as one everywhere.** No price index is
+    the construction cost index itself. Rather than hold a stale index (which under-prices every
+    recent tender) or silently extrapolate the index's own trend (which invents a trend the publisher
+    never published), the app carries the last observation forward along the movement in a **real,
+    dated, published** price index and marks every affected line `basis: assumed` with the
+    `index_bridged` flag. A **producer** price index is used first because it prices the commodity
+    baskets a construction rate is built from; a consumer index is the fallback, and the response
+    reports which kind was used (`kind` in `index_bridge`, `index_bridge_kind` per line) so the
+    strength of the assumption is visible rather than implied. The bridge is its own waterfall step so
+    it can never be mistaken for the observed market movement, and it can be switched off. Asserted by
+    the `test_cpi_bridge.py` suite.
+18. **The bridge stops at the last published month of the series it is using rather than
+    extrapolating.** If the tender quarter is later than the index itself, the index is carried
+    forward only as far as real data allows, `shortfall_months` reports the gap, and a warning says the
+    index is derived to a month short of the quarter end. Inventing the missing months is exactly the
+    failure mode this whole feature exists to avoid.
 19. **An absolute index override replaces the bridged level, not the published one.** So the analyst
     always wins, and the bridge step in the waterfall falls to exactly zero when an override is set -
     a fully replaced index has no modelled component. Asserted by
     `test_absolute_override_replaces_the_bridged_level`.
 20. **The quarter selector offers quarters the index has not published.** Pricing a live tender means
     pricing the current quarter, so those quarters are selectable and labelled
-    `- index bridged with CPI` (or `- index held, Nq stale` when the bridge is off). A newly uploaded
+    `- index carried forward with PPI` or `with CPI` (or `- index held, Nq stale` when the bridge is
+    off). A newly uploaded
     BoQ defaults to the current calendar quarter; the seeded demonstration bills keep the quarter they
     were calibrated for, so the documented demo numbers did not move.
 21. **Overheads and margin compound, and the choice is asserted rather than described.** Margin is
@@ -1178,15 +1262,21 @@ Each of these is a deliberate choice, not an oversight.
 
 ## Limitations - what this is not
 
-* **Not usable for a real tender decision as shipped.** The construction cost indexes and every
-  benchmark rate are synthetic placeholders. The monthly CPI, the India WPI and the material prices
-  *are* real, but a bridged index is a modelled step and the rate library under it is still invented.
-  The UI says so on every screen.
-* **The CPI bridge is not a construction cost forecast.** It carries an index to the tender quarter
-  using consumer price movement because that is the only current official series available for both
-  markets at that frequency. It brackets the gap; it does not measure it. Where a licensed monthly
-  construction cost index exists (BCA InfoNet indices for fluctuation clauses, for instance), use that
-  instead - and prefer a published quarter over a bridged one whenever the tender allows it.
+* **Not usable for a real tender decision as shipped.** The monthly **producer** price indexes, the
+  monthly **consumer** price indexes, the India WPI quarters and the material price series are real
+  published data. What is neither published nor licensed is the **benchmark rate library** and the
+  **regional multipliers** - the CPWD DSR, the state PWD schedules and BCA Construction InfoNet are
+  licensed publications - so those rows are **indicative seed values** carrying `is_placeholder: true`,
+  a source URL and a TODO. On top of that, a carried-forward index is a **derived** figure rather than
+  an observation. The UI labels published, derived and indicative separately on every screen.
+* **The index bridge is not a construction cost forecast.** It carries an index to the tender quarter
+  along the movement in a producer - or, failing that, consumer - price index, because those are the
+  only current official series published monthly for both markets. Even a producer basket prices only
+  the material and fuel content of a section: no published index measures site labour, which is why
+  the coverage table flags labour-dominated sections explicitly. It brackets the gap; it does not
+  measure it. Where a licensed monthly construction cost index exists (BCA InfoNet indices for
+  fluctuation clauses, for instance), use that instead - and prefer a published quarter over a
+  derived one whenever the tender allows it.
 * **No PDF upload.** No OCR pipeline, and no runtime LLM call is permitted.
 * **No authentication or audit trail.** Every endpoint is open. Do not expose this to the internet
   with real commercial BoQ data until auth, per-tenant isolation and an audit log are added.
@@ -1211,13 +1301,22 @@ series for cement, steel reinforcement and ready-mixed concrete, published month
 RLB Rider's Digest and the Arcadis Quarterly Cost Review for building-type rates and TPI series -
 SMM2, the Standard Method of Measurement of Building Works, 2nd Edition, for BoQ classification.
 
-Used **by value** in this build (real observations, not placeholders): the Singapore Department of
-Statistics Consumer Price Index, All Items, table M213751 (2024 = 100, monthly, current to 2026-07);
-the BCA Construction Material Market Prices table M211671 (annual, current to 2025); the India
-Wholesale Price Index, base 2022-23 = 100 (Office of the Economic Adviser, DPIIT); and the MoSPI /
+Used **by value** in this build (real published observations): the Singapore Department of Statistics
+Consumer Price Index, All Items, table M213751 (2024 = 100, monthly, current to 2026-07); the BCA
+Construction Material Market Prices table M211671 (annual, current to 2025); the India **Wholesale /
+Producer Price Index**, base 2022-23 = 100 (Office of the Economic Adviser, DPIIT) - including **16
+construction-relevant commodity baskets** published monthly, from Cement and Iron And Steel through
+Petroleum Products, Electricity, Electrical Cables and the all-commodities composite; and the MoSPI /
 NSO Consumer Price Index, Combined, All-India General - base 2024 = 100 with the publisher's own
 back-cast months on that base, plus the predecessor base 2012 = 100. (Note: there is no 2016 = 100
 retail CPI in India; that base belongs to the Labour Bureau's CPI-IW, a different basket.)
+
+Named as coverage gap-closers, cited but **not** imported: the Labour Bureau **CPI-IW** (the
+wage-escalation index written into Indian construction contracts, published per centre and per base
+year, so it does not map one-to-one onto the city multipliers); the **CPWD Delhi Schedule of Rates**
+and its piling chapter; **BCA Construction InfoNet** and the **SISV** tender price circulars for
+Singapore; and the **MOM** wage data for construction labour. Each is labelled `wired`, `partial` or
+`gap` against the section it would close, on `GET /api/indices/coverage`.
 
 ---
 

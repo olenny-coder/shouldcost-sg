@@ -284,7 +284,7 @@ async def upload_boq(
         )
     if any(item.is_placeholder for item in items):
         warnings.append(
-            "Some lines in this file are flagged is_placeholder = true, i.e. synthetic sample "
+            "Some lines in this file are flagged is_placeholder = true, i.e. indicative sample "
             "data rather than a real tender."
         )
 
@@ -427,7 +427,7 @@ def _benchmark_for_export(db: Session, upload: BoQUpload, items: list[BoQItem], 
             region_code=_upload_region(db, upload, getattr(request, "region_code", None)),
             adjustments=request.adjustments,
             manual_rates=getattr(request, "manual_rates", None),
-            index_bridge=getattr(request, "index_bridge", "cpi"),
+            index_bridge=getattr(request, "index_bridge", "auto"),
         )
     except RegionLookupError as exc:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
@@ -471,7 +471,7 @@ def _report_rows(computation, items: list[BoQItem]) -> list[dict]:
     add("report", "regional_factor", "Regional cost multiplier applied to every benchmark base rate", round(computation.regional_factor, 4), "assumed")
     if computation.regional_factor != 1.0:
         add("report", "regional_factor_source", "Source for the regional multiplier", computation.regional_factor_source)
-        add("report", "regional_factor_placeholder", "Regional multiplier is a synthetic placeholder", computation.regional_factor_is_placeholder)
+        add("report", "regional_factor_placeholder", "Regional multiplier is an indicative seed value, not a published city index", computation.regional_factor_is_placeholder)
     add("report", "measurement_standard", "Measurement / classification standard", computation.classification_standard)
     add("report", "boq_file", "Bill of Quantities source file", computation.filename)
     add("report", "tender_quarter", "Tender quarter benchmarked", computation.tender_quarter)
@@ -519,12 +519,22 @@ def _report_rows(computation, items: list[BoQItem]) -> list[dict]:
         add("report", "index_quarter_used", "Index quarter actually used", line.tpi_quarter_used)
         add("report", "index_value_used", "Index value used", line.tpi_value)
         add("report", "index_value_published", "Index value as published", line.tpi_value_published)
-    # ---- index freshness / CPI bridge -------------------------------------------
+    # ---- index freshness / the carried-forward index ----------------------------
+    # The bridge runs on a PRODUCER price index where the market publishes one and a
+    # CONSUMER price index only as the fallback, so the report names which kind was
+    # used rather than assuming a CPI.
     freshness = computation.index_bridge or {}
+    bridge_kind = (freshness.get("kind") or "").upper()
+    bridge_kind_label = (
+        "producer price index" if bridge_kind == "PPI"
+        else ("consumer price index" if bridge_kind == "CPI" else "price index")
+    )
     add(
         "report",
         "index_bridge_applied",
-        "Index value for the tender quarter was bridged with the CPI (modelled, not observed)",
+        "Index value for the tender quarter was derived by carrying the last published observation "
+        "forward along the published trend (modelled, not observed)"
+        + (f" - carried with the {bridge_kind_label}" if freshness.get("applied") else ""),
         bool(freshness.get("applied")),
         "assumed" if freshness.get("applied") else "derived",
     )
@@ -535,31 +545,35 @@ def _report_rows(computation, items: list[BoQItem]) -> list[dict]:
             freshness.get("lag_quarters"), "measured")
         add("report", "index_bridge_formula",
             "Bridge formula",
-            "index_value(tender) = index_value(last_observed_quarter) * cpi(covered_through) / cpi(last_observed_quarter)")
+            "index_value(tender) = index_value(last_observed_quarter) * price_index(covered_through) / price_index(last_observed_quarter)")
         if freshness.get("applied"):
-            add("report", "cpi_series", "Consumer price series used for the bridge",
+            add("report", "index_bridge_kind",
+                "Which price index carried the observation forward (PPI preferred, CPI fallback)",
+                bridge_kind_label, "measured")
+            add("report", "cpi_series",
+                "Price series used to carry the index forward",
                 freshness.get("cpi_series_name"), "measured")
-            add("report", "cpi_months_from", "CPI months at the index observation quarter",
+            add("report", "cpi_months_from", "Months of that series at the index observation quarter",
                 "|".join(freshness.get("cpi_from_months") or []), "measured")
-            add("report", "cpi_value_from", "CPI mean over those months",
+            add("report", "cpi_value_from", "Mean of that series over those months",
                 freshness.get("cpi_from_value"), "measured")
-            add("report", "cpi_months_to", "CPI months used at the bridge target",
+            add("report", "cpi_months_to", "Months of that series used at the bridge target",
                 "|".join(freshness.get("cpi_to_months") or []), "measured")
-            add("report", "cpi_value_to", "CPI mean over those months",
+            add("report", "cpi_value_to", "Mean of that series over those months",
                 freshness.get("cpi_to_value"), "measured")
-            add("report", "cpi_bridge_factor", "CPI bridge factor applied to the index",
+            add("report", "cpi_bridge_factor", "Factor applied to the index (derived to show the trend to date)",
                 freshness.get("cpi_bridge_factor"), "assumed")
-            add("report", "index_bridged_through", "Index is current to this month after bridging",
+            add("report", "index_bridged_through", "Index is derived to this month after carrying forward",
                 freshness.get("bridged_through_month"), "assumed")
             add("report", "index_bridge_shortfall_months",
-                "Months between the bridged-through month and the end of the tender quarter",
+                "Months between the carried-forward month and the end of the tender quarter",
                 freshness.get("shortfall_months"), "assumed")
-            add("report", "cpi_source_url", "Source of the CPI series",
+            add("report", "cpi_source_url", "Source of the price series used",
                 freshness.get("cpi_source_url"), "measured")
-            add("report", "cpi_provenance_note", "CPI provenance",
+            add("report", "cpi_provenance_note", "Provenance of that price series",
                 freshness.get("cpi_provenance_note"), "measured")
         else:
-            add("report", "index_bridge_reason", "Why the bridge was not applied",
+            add("report", "index_bridge_reason", "Why the index was not carried forward",
                 freshness.get("reason"), "derived")
     add("report", "formula", "Formula contract", "adjusted_benchmark_rate = base_rate * (index_used / index_base) * scope_factor")
 

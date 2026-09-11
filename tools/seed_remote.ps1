@@ -121,6 +121,10 @@ Check '/api/indices/tpi?country=SG'                'SG indexes'  100
 Check '/api/indices/regions?country=IN'            'IN regions'   10
 Check '/api/indices/benchmark-rates?country=SG'    'rate library' 10
 Check '/api/boq?country=SG'                        'SG samples'    1
+# The price series are the bridge input: producer baskets for India, the consumer
+# index for both. The default series must be present, or the bridge cannot run.
+Check '/api/indices/price-series?country=IN&series=PPI-ALL'  'IN PPI'  40
+Check '/api/indices/price-series?country=SG&series=CPI-ALL'  'SG CPI'  55
 
 Write-Host ''
 if ($failed) {

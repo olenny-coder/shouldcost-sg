@@ -10,7 +10,7 @@ const COMPONENT_LABEL = {
   material: 'Material (assumed split)',
   labour: 'Labour (assumed split)',
   market_risk: 'Market risk (published index movement)',
-  cpi_bridge: 'Index bridged to the tender quarter',
+  cpi_bridge: 'Index carried forward to the tender quarter',
   scope: 'Scope (excluded sections)',
   overhead: 'Overheads (analyst %)',
   margin: 'Margin (analyst %)',
@@ -26,7 +26,7 @@ const COMPONENT_SHORT = {
   material: 'Material',
   labour: 'Labour',
   market_risk: 'Market risk',
-  cpi_bridge: 'CPI bridge',
+  cpi_bridge: 'Index carried forward',
   scope: 'Scope',
   overhead: 'Overheads',
   margin: 'Margin',
@@ -187,7 +187,7 @@ export default function WaterfallChart(props) {
             'The small chips under the axis repeat each step\'s basis. Amber steps are not evidence - they are apportioned, bridged or analyst-supplied.',
             'Overheads and margin, when you set them, are the last two steps before the closing bar, and the closing bar is then the FULL should-cost.',
             'Hover any bar for the method that produced it and the full justification.',
-            'If the index series has not published the tender quarter yet, its movement to date is bridged with the consumer price index. That step appears as its own amber bar, because it is modelled rather than observed.',
+            'If the index series has not published the tender quarter yet, it is carried forward along the published movement of a price index - a producer price index first, and a consumer price index only where the market publishes no usable producer series. That step appears as its own amber bar, because it is derived rather than observed.',
             'The banner above the chart must read "Reconciled". If it does not, treat every figure as unreliable.',
             'The reconciliation table below carries the same numbers in text form, with the method and justification spelled out.',
           ]}
@@ -197,20 +197,19 @@ export default function WaterfallChart(props) {
       <p className="muted">
         One blue family, light to dark: the deepest bars are the opening BoQ total and the closing
         should-cost total. <strong>Amber numbers and chips mark assumed steps</strong> - apportioned,
-        bridged or analyst-supplied, never measured.
+        carried forward or analyst-supplied, never measured.
       </p>
 
       {result.index_bridge && result.index_bridge.applied ? (
         <div className="notice notice-info">
-          <strong>The index was bridged to the tender quarter.</strong>{' '}
+          <strong>The index was carried forward to the tender quarter.</strong>{' '}
           {result.index_bridge.index_series} last published{' '}
           <strong>{result.index_bridge.observation_quarter}</strong>; for{' '}
-          {result.index_bridge.requested_quarter} the index was carried forward to{' '}
-          {result.index_bridge.bridged_through_month} with the observed change in{' '}
-          {result.index_bridge.cpi_series_name} (factor{' '}
+          {result.index_bridge.requested_quarter} it was carried forward to{' '}
+          {result.index_bridge.bridged_through_month} along the published trend of{' '}
+          {result.index_bridge.series_name || result.index_bridge.cpi_series_name} (factor{' '}
           {Number(result.index_bridge.cpi_bridge_factor).toFixed(4)}). That step is the
-          "Index bridged to the tender quarter" bar, and it is <strong>assumed</strong>, not
-          measured.
+          "Index carried forward" bar, and it is <strong>assumed</strong>, not measured.
         </div>
       ) : null}
 

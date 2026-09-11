@@ -419,11 +419,11 @@ def main(argv: list[str] | None = None) -> int:
         summary = real_data_summary(session)
     finally:
         session.close()
-    print("ETL: real published data vs synthetic placeholder")
+    print("ETL: published data vs indicative seed values")
     for table in ("tpi_series", "material_prices", "benchmark_rates", "regional_factors", "price_series"):
         real = summary[table]
         total = summary[table + "_total"]
-        flag = "REAL" if real == total else ("placeholder" if real == 0 else "MIXED")
+        flag = "PUBLISHED" if real == total else ("indicative" if real == 0 else "MIXED")
         print(f"  {table:<18} {real:>4} real / {total:>4} total   [{flag}]")
     return 0
 

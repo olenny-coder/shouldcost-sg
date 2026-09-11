@@ -10,7 +10,10 @@ nothing, and exits non-zero if anything drifts.
 What it checks:
 
 * **Singapore CPI** (`backend/data/cpi_series.csv`) against SingStat table M213751,
-  row "All Items" - the series behind the index bridge.
+  row "All Items" - the series behind the Singapore index bridge.
+* **India producer price indexes** (`backend/data/price_series.csv`, `kind = PPI`) against the
+  Office of the Economic Adviser's OPPI/WPI workbook: all 16 commodity baskets, every month, at the
+  published basket weight. These are the series the bridge reaches for first.
 * **Singapore material prices** (`backend/data/material_prices.csv`) against
   SingStat table M211671.
 * **India WPI** (`backend/data/tpi_series.csv`, `is_placeholder = false`) against
@@ -40,10 +43,33 @@ REALDATA = REPO.parent / ".realdata"
 SINGSTAT_CPI = REALDATA / "singstat_M213751_cpi.json"
 SINGSTAT_MATERIALS = REALDATA / "singstat_M211671_fresh.json"
 WPI_WORKBOOK = REALDATA / "wpi_monthly_2223.xlsx"
+OPPI_WORKBOOK = REALDATA / "oppi_monthly_2223.xlsx"
 
 CPI_CSV = DATA / "cpi_series.csv"
 MATERIALS_CSV = DATA / "material_prices.csv"
 TPI_CSV = DATA / "tpi_series.csv"
+PRICE_SERIES_CSV = DATA / "price_series.csv"
+
+# Every seeded producer series, mapped to the published commodity name it must
+# reproduce, and the published weight that name carries in the index basket.
+PPI_SERIES = {
+    "PPI-ALL": ("ALL COMMODITIES", 100.0),
+    "PPI-CEM": ("Cement", 1.45826),
+    "PPI-STL": ("Iron And Steel Ferro Alloys", 1.94177),
+    "PPI-STL-CAST": ("Iron And Steel Casting And Forging", 2.11647),
+    "PPI-STL-FDRY": ("Iron And Steel Foundries", 1.83508),
+    "PPI-NMM": ("Non Metallic Mineral Products", 1.04611),
+    "PPI-WOOD": ("Wood And Wood Products Except Furniture", 1.08949),
+    "PPI-PLASTIC": ("Plastic Products", 1.83629),
+    "PPI-PAINT": ("Paints, Varnishes And Lacquers", 0.76978),
+    "PPI-CABLE": ("Electrical Cables, Wires", 0.48862),
+    "PPI-ELEC": ("Electricity", 4.48719),
+    "PPI-PETRO": ("Petroleum Products", 7.03205),
+    "PPI-AGG": ("Other Non Metallic Minerals", 1.08834),
+    "PPI-LIME": ("Limestone", 0.14374),
+    "PPI-ELECIND": ("Electrical Industrial Machinery", 1.18549),
+    "PPI-ELECOTH": ("Other Electrical Machinery", 0.85762),
+}
 
 MONTHS = {
     "Jan": 1, "Feb": 2, "Mar": 3, "Apr": 4, "May": 5, "Jun": 6,
@@ -334,12 +360,73 @@ def check_india_cpi() -> None:
     )
 
 
+def check_ppi() -> None:
+    """Re-derive every seeded India producer series from the OPPI/WPI workbook."""
+    if not OPPI_WORKBOOK.exists():
+        print(f"[SKIP] India PPI: {OPPI_WORKBOOK} not found")
+        return
+
+    frame = pd.read_excel(OPPI_WORKBOOK, engine="openpyxl", header=0)
+    frame.columns = [str(c).strip() for c in frame.columns]
+    month_columns = [c for c in frame.columns if re.match(r"^[A-Z][a-z]{2}-\d{2}$", c)]
+
+    def month_of(label: str) -> str:
+        mon, year = label.split("-")
+        return f"{2000 + int(year):04d}-{MONTHS[mon]:02d}"
+
+    seeded: dict[str, dict[str, float]] = {}
+    weights: dict[str, float] = {}
+    with PRICE_SERIES_CSV.open(encoding="utf-8-sig", newline="") as handle:
+        for row in csv.DictReader(handle):
+            if row["country"] != "IN" or row["kind"] != "PPI":
+                continue
+            seeded.setdefault(row["series_name"], {})[row["month"]] = float(row["value"])
+
+    mismatches: list[str] = []
+    checked = 0
+    latest = "n/a"
+    for name in sorted(seeded):
+        if name not in PPI_SERIES:
+            mismatches.append(f"{name}: seeded but not mapped to a published commodity")
+            continue
+        commodity, published_weight = PPI_SERIES[name]
+        hit = frame[frame["Commodity Name"].astype(str).str.strip() == commodity]
+        if hit.empty:
+            mismatches.append(f"{name}: commodity {commodity!r} is not in the workbook")
+            continue
+        record = hit.iloc[0]
+        weight = float(record["Commodity Weight"])
+        weights[name] = weight
+        if abs(weight - published_weight) > 1e-5:
+            mismatches.append(
+                f"{name}: basket weight {weight} vs the {published_weight} this file claims"
+            )
+        published = {month_of(m): float(record[m]) for m in month_columns}
+        for month, value in sorted(seeded[name].items()):
+            checked += 1
+            if month not in published:
+                mismatches.append(f"{name} {month}: seeded but not published")
+            elif abs(value - published[month]) > 1e-6:
+                mismatches.append(
+                    f"{name} {month}: seed {value} vs publisher {published[month]}"
+                )
+        latest = max([latest] + [m for m in published] if latest != "n/a" else list(published))
+
+    missing = [name for name in PPI_SERIES if name not in seeded]
+    report(
+        f"India producer price indexes (OEA OPPI/WPI), {len(seeded)} basket(s), months to {latest}",
+        checked,
+        mismatches + [f"{name}: mapped but not seeded" for name in missing],
+    )
+
+
 def main() -> int:
     print(f"Verifying seeded reference data against {REALDATA}\n")
     check_cpi()
     check_india_cpi()
     check_materials()
     check_wpi()
+    check_ppi()
     print(f"\n{checks} published value(s) checked; {len(problems)} problem(s).")
     if problems:
         print("The seed data has drifted from its source. Refresh it before trusting the app.")

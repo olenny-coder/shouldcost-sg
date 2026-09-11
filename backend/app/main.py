@@ -111,8 +111,9 @@ def root() -> dict:
         "health": "/api/healthz",
         "markets": ["SG", "IN"],
         "data_notice": (
-            "Bundled index and benchmark data for BOTH markets are SYNTHETIC PLACEHOLDERS "
-            "(is_placeholder = true). Do not use for a real tender decision."
+            "Published index series are real; benchmark rates and regional multipliers are "
+            "indicative seed values derived to show the trend to date (is_placeholder = true). "
+            "Do not use for a real tender decision."
         ),
     }
 

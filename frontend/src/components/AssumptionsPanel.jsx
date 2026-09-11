@@ -1,5 +1,9 @@
 import React, { useCallback, useEffect, useState } from 'react'
 import { BASIS_LABEL, BASIS_HELP } from '../format.js'
+import {
+  bridgeFactor, bridgeFromMonths, bridgeFromValue, bridgeKind, bridgeKindLong,
+  bridgeReason, bridgeSeries, bridgeToMonths, bridgeToValue,
+} from '../bridge.js'
 
 const STORAGE_KEY = 'shouldcost.assumptions-panel.collapsed'
 
@@ -17,9 +21,9 @@ function readStoredCollapsed() {
  * The panel is COLLAPSIBLE at the user's request, and remembers the choice, so a
  * returning analyst who already knows what the warnings say is not made to scroll
  * past them on every re-run. Collapsing is never silent: the header keeps a live
- * count of warnings and assumptions, and the amber "index bridged", "placeholder
- * data" and "index adjusters active" chips stay visible in the collapsed strip, so
- * an assumed figure can never be mistaken for a measured one.
+ * count of warnings and assumptions, and the amber "index carried forward",
+ * "indicative seed data" and "index adjusters active" chips stay visible in the
+ * collapsed strip, so an assumed figure can never be mistaken for a measured one.
  *
  * Each list also collapses on its own, so the warnings can be folded away while
  * the assumptions stay open, or the other way round.
@@ -27,7 +31,7 @@ function readStoredCollapsed() {
 export default function AssumptionsPanel(props) {
   const warnings = props.warnings || []
   const assumptions = props.assumptions || []
-  const placeholderLines = props.placeholderLineCount || 0
+  const indicativeLines = props.indicativeLineCount || 0
   const adjustmentsActive = props.adjustmentsActive === true
   const indexBridge = props.indexBridge || null
   const bridgeApplied = !!(indexBridge && indexBridge.applied)
@@ -46,18 +50,18 @@ export default function AssumptionsPanel(props) {
 
   const toggle = useCallback(function () { setCollapsed(function (current) { return !current }) }, [])
 
-  if (!warnings.length && !assumptions.length && !placeholderLines) {
+  if (!warnings.length && !assumptions.length && !indicativeLines) {
     return null
   }
 
   const chips = []
-  if (placeholderLines > 0) {
-    chips.push({ key: 'placeholder', label: placeholderLines + ' placeholder line(s)', tone: 'basis-assumed' })
+  if (indicativeLines > 0) {
+    chips.push({ key: 'indicative', label: indicativeLines + ' line(s) on an indicative seed rate', tone: 'basis-assumed' })
   }
   if (bridgeApplied) {
     chips.push({
       key: 'bridge',
-      label: 'index bridged with CPI'
+      label: 'index carried forward with ' + bridgeKind(indexBridge)
         + (indexBridge.bridged_through_month ? ' to ' + indexBridge.bridged_through_month : ''),
       tone: 'basis-assumed',
     })
@@ -120,35 +124,44 @@ export default function AssumptionsPanel(props) {
         </div>
       ) : (
         <div id="assumptions-body">
-          {placeholderLines > 0 && (
+          {indicativeLines > 0 && (
             <div className="notice notice-critical">
-              <strong>Placeholder data in this run.</strong> {placeholderLines} benchmark line(s) are
-              flagged <code>is_placeholder: true</code>. The bundled index values and benchmark rates
-              are SYNTHETIC and must not be used for a real tender decision. Every placeholder row
-              carries a source_url and a <code># TODO: replace with actual ...</code> marker.
+              <strong>Indicative seed rates in this run.</strong> {indicativeLines} benchmark line(s)
+              are priced from the indicative rate library rather than a licensed schedule of rates -
+              flagged <code>is_placeholder: true</code>. The published <em>index</em> series are real
+              data, but these base rates are not, so they must not be used for a real tender
+              decision. Every such row carries a source_url and a{' '}
+              <code># TODO: replace with actual ...</code> marker naming the publication it stands in
+              for.
             </div>
           )}
 
           {bridgeApplied && indexBridge && (
             <div className="notice notice-warn">
-              <strong>Index bridged with the consumer price index.</strong> The{' '}
-              <code>{indexBridge.index_series}</code> series has no published observation for{' '}
+              <strong>
+                Index carried forward with the {bridgeKindLong(bridgeKind(indexBridge))}.
+              </strong>{' '}
+              The <code>{indexBridge.index_series}</code> series has no published observation for{' '}
               <code>{indexBridge.requested_quarter}</code>; its last observation is{' '}
               <code>{indexBridge.observation_quarter}</code> ({indexBridge.lag_quarters} quarter(s)
-              earlier). The index used is that observation scaled by the observed change in{' '}
-              <code>{indexBridge.cpi_series_name}</code> from{' '}
-              {formatMonths(indexBridge.cpi_from_months)} ({fmt(indexBridge.cpi_from_value)}) to{' '}
-              {formatMonths(indexBridge.cpi_to_months)} ({fmt(indexBridge.cpi_to_value)}) - a factor
-              of <strong>{fmt(indexBridge.cpi_bridge_factor, 4)}</strong>, giving{' '}
+              earlier). That observation was carried forward along the published movement in{' '}
+              <code>{bridgeSeries(indexBridge)}</code> from{' '}
+              {formatMonths(bridgeFromMonths(indexBridge))} ({fmt(bridgeFromValue(indexBridge))}) to{' '}
+              {formatMonths(bridgeToMonths(indexBridge))} ({fmt(bridgeToValue(indexBridge))}) - a
+              factor of <strong>{fmt(bridgeFactor(indexBridge), 4)}</strong>, giving{' '}
               <strong>{fmt(indexBridge.index_value_used, 4)}</strong> from a published{' '}
-              {fmt(indexBridge.index_value_published, 4)}. Consumer prices are not construction
-              costs, so every bridged line is <code>basis: assumed</code>, flagged{' '}
-              <em>CPI-bridged</em>, and the step is shown separately in the waterfall.
+              {fmt(indexBridge.index_value_published, 4)}. The result is{' '}
+              <strong>derived to show the trend to date</strong>
+              {bridgeKind(indexBridge) === 'PPI'
+                ? ' - producer prices measure what suppliers charge for the materials a construction rate is made of, which makes this the closest published proxy for the movement being estimated.'
+                : ' - consumer prices measure what households pay, not what is bought for a building, so this is the weaker proxy, used only because no producer series spans this window.'}{' '}
+              Every bridged line is <code>basis: assumed</code> and the step is shown separately in
+              the waterfall.
               {indexBridge.shortfall_months > 0
-                ? ' The CPI is published only to ' + indexBridge.bridged_through_month + ', so the index is current to that month, not to the quarter end.'
+                ? ' ' + bridgeSeries(indexBridge) + ' is published only to ' + indexBridge.bridged_through_month + ', so the index is derived to that month, not to the quarter end.'
                 : ''}
               {indexBridge.cpi_is_placeholder
-                ? ' The CPI series itself is still a synthetic placeholder.'
+                ? ' The series used for the bridge is itself an indicative seed series rather than a published observation.'
                 : ''}
             </div>
           )}
@@ -237,15 +250,4 @@ function formatMonths(months) {
   return months[0] + ' to ' + months[months.length - 1]
 }
 
-function bridgeReason(reason) {
-  const map = {
-    no_cpi_series_configured_for_country: 'no consumer price series is configured for this market',
-    no_cpi_observations_loaded: 'no consumer price observations are loaded',
-    no_cpi_observation_for_the_observation_quarter: 'the CPI has no observation for the index quarter',
-    no_cpi_observation_after_the_index_observation: 'the CPI has no observation after the index quarter',
-    no_cpi_series_covers_both_quarters: 'no loaded CPI series spans both quarters (the publisher rebased the CPI and the bases do not overlap)',
-    cpi_value_at_the_observation_quarter_is_zero: 'the CPI value at the index quarter is zero',
-    index_observation_covers_requested_quarter: 'the index already covers the tender quarter',
-  }
-  return map[reason] || 'no CPI bridge was available'
-}
+

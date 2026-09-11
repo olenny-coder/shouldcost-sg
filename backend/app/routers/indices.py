@@ -11,7 +11,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from .. import benchmark, classifier, schemas
+from .. import benchmark, classifier, coverage, schemas
 from ..countries import DEFAULT_COUNTRY, UnknownCountryError, get_country
 from ..db import get_db
 from ..models import BenchmarkRate, PriceSeries, MaterialPrice, RegionalFactor, TPISeries
@@ -128,7 +128,7 @@ def index_freshness(
         today = date.today()
         reference = benchmark.format_quarter(today.year, (today.month - 1) // 3 + 1)
 
-    cpi_rows = list(
+    price_rows = list(
         db.scalars(
             select(PriceSeries)
             .where(PriceSeries.country == code)
@@ -136,14 +136,18 @@ def index_freshness(
         )
     )
     default_cpi = (registry.default_cpi_series or "").upper()
-    # The registry names the PREFERRED consumer price series. Other bases may be
-    # loaded too (India carries the 2024-based series and its predecessor, which do
-    # not overlap), and the engine will use whichever one spans both bridge
-    # endpoints. All of them are reported here with their coverage.
+    default_ppi = (registry.default_ppi_series or "").upper()
+    # The registry names the PREFERRED producer and consumer price series. Other
+    # bases may be loaded too (India carries the 2024-based consumer series and its
+    # predecessor, which do not overlap), and the engine will use whichever one
+    # spans both bridge endpoints. All of them are reported here with their coverage.
     grouped_cpi: dict[str, list[PriceSeries]] = {}
-    for row in cpi_rows:
-        grouped_cpi.setdefault(row.series_name, []).append(row)
+    grouped_ppi: dict[str, list[PriceSeries]] = {}
+    for row in price_rows:
+        target = grouped_ppi if row.kind == "PPI" else grouped_cpi
+        target.setdefault(row.series_name, []).append(row)
     default_rows = grouped_cpi.get(default_cpi, [])
+    ppi_rows = grouped_ppi.get(default_ppi, [])
     other_series = sorted(name for name in grouped_cpi if name != default_cpi)
     cpi_series_list = [
         {
@@ -158,6 +162,23 @@ def index_freshness(
             "source_url": rows[-1].source_url,
         }
         for name, rows in sorted(grouped_cpi.items())
+    ]
+
+    ppi_series_list = [
+        {
+            "series_name": name,
+            "base_year": rows[-1].base_year,
+            "observations": len(rows),
+            "first_month": rows[0].month,
+            "last_month": rows[-1].month,
+            "latest_value": rows[-1].value,
+            "is_preferred": name == default_ppi,
+            "is_placeholder": any(r.is_placeholder for r in rows),
+            "source_url": rows[-1].source_url,
+            "scope_sections": rows[0].scope_sections,
+            "title": rows[0].title,
+        }
+        for name, rows in sorted(grouped_ppi.items())
     ]
 
     series_rows = list(
@@ -180,7 +201,8 @@ def index_freshness(
             country=code,
             observation_quarter=latest.quarter,
             requested_quarter=reference,
-            mode=benchmark.BRIDGE_CPI,
+            # The engine's own default: producer index first, consumer as fallback.
+            mode=benchmark.BRIDGE_AUTO,
             published_index_value=latest.value,
         )
         if bridge.applied:
@@ -216,8 +238,36 @@ def index_freshness(
         cpi_source_url=default_rows[-1].source_url if default_rows else "",
         cpi_other_series=other_series,
         cpi_series_list=cpi_series_list,
+        ppi_series_name=default_ppi,
+        ppi_series_available=bool(ppi_rows),
+        ppi_latest_month=ppi_rows[-1].month if ppi_rows else None,
+        ppi_latest_value=ppi_rows[-1].value if ppi_rows else None,
+        ppi_base_year=ppi_rows[-1].base_year if ppi_rows else None,
+        ppi_observations=len(ppi_rows),
+        ppi_source_url=ppi_rows[-1].source_url if ppi_rows else "",
+        ppi_series_list=ppi_series_list,
+        bridge_preference=(
+            "producer"
+            if default_ppi and ppi_rows
+            else ("consumer" if default_cpi and default_rows else "none")
+        ),
         series=series_out,
     )
+
+
+@router.get("/coverage", response_model=schemas.IndexCoverageOut)
+def index_coverage(
+    country: str = Query(DEFAULT_COUNTRY, description="SG | IN"),
+    db: Session = Depends(get_db),
+) -> schemas.IndexCoverageOut:
+    """Which published series re-prices which measurement section, and where the gaps are.
+
+    Read-only. The series list is read from the database, so this reports what is
+    actually loaded rather than what is intended: any section with no covering series
+    is named as uncovered, because the benchmark holds it at base year.
+    """
+    code = _country(country)
+    return schemas.IndexCoverageOut.model_validate(coverage.build_coverage(db, code))
 
 
 @router.get("/benchmark-rates", response_model=list[schemas.BenchmarkRateOut])

@@ -154,10 +154,13 @@ with:
 
 ```bash
 curl "https://<your-service>.onrender.com/api/indices/regions?country=IN"
+curl "https://<your-service>.onrender.com/api/indices/coverage?country=IN"
 ```
 
 Twelve Indian cities means it worked. ```[]``` means it did not - check the deploy log for a line
-beginning ```AUTO_SEED:```.
+beginning ```AUTO_SEED:```. The coverage call is the sharper check of the two: it should report
+```"uncovered_sections": []``` (or just `Unclassified`) and ```"producer_series_count": 16```, which
+proves both the seed and the producer-index wiring survived the deploy.
 
 To seed deliberately instead, set ```AUTO_SEED=false``` and use one of these:
 
@@ -193,20 +196,21 @@ ETL: row counts after load
   material_prices    180
   benchmark_rates    20
   regional_factors   13
-  cpi_series         146
+  price_series       786
   boq_uploads        2
   boq_items          40
-ETL: real published data vs synthetic placeholder
+ETL: published data vs indicative seed values
   tpi_series           78 real /  126 total   [MIXED]
-  material_prices     180 real /  180 total   [REAL]
-  benchmark_rates       0 real /   20 total   [placeholder]
-  regional_factors      0 real /   13 total   [placeholder]
-  cpi_series          146 real /  146 total   [REAL]
+  material_prices     180 real /  180 total   [PUBLISHED]
+  benchmark_rates       0 real /   20 total   [indicative]
+  regional_factors      0 real /   13 total   [indicative]
+  price_series        786 real /  786 total   [PUBLISHED]
 ```
 
-(`cpi_series` is seeded from `backend/data/cpi_series.csv`, which is the real monthly consumer price
-index for Singapore. It is what carries a stale index observation forward to the tender quarter - see
-README "Keeping the indexes current".)
+(`price_series` is seeded from `backend/data/price_series.csv`: the 16 real monthly **India producer
+price index** baskets (Office of the Economic Adviser, base 2022-23 = 100) plus the monthly consumer
+price index for both markets. Those are the series that carry a stale index observation forward to the
+tender quarter - see README "Keeping the indexes current: PPI first, CPI as fallback".)
 
 It is idempotent, so re-running is always safe.
 
@@ -410,8 +414,10 @@ rollback, the PostgreSQL-vs-SQLite test matrix, and a survey of free hosting alt
 
 Two things to understand before you put this in front of anyone:
 
-1. **The benchmark rates are synthetic placeholders.** The 20 rate rows stand in for the CPWD Delhi
-   Schedule of Rates and BCA Construction InfoNet, both licensed publications. The UI says so on
+1. **The benchmark rates are indicative seed values, not published data.** The 20 rate rows stand in
+   for the CPWD Delhi Schedule of Rates and BCA Construction InfoNet, both licensed publications, so
+   they carry `is_placeholder: true`, a source URL and a TODO. The published **index** series are real,
+   and figures the engine derives from them are labelled as derived. The UI says which is which on
    every screen. Refresh the real index data with ```python -m app.importer```.
 2. **There is no authentication.** Every endpoint is open. Do not upload a real commercial Bill of
    Quantities to a public URL until you have added auth and an audit trail.

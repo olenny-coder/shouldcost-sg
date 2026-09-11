@@ -103,14 +103,16 @@ export default function IndexAdjusters(props) {
 
       {props.indexBridge && props.indexBridge.applied ? (
         <p className="small bridge-line">
-          <strong>Index already bridged.</strong> The {props.indexBridge.index_series} index for{' '}
-          {props.indexBridge.requested_quarter} is not a published observation: it is the{' '}
+          <strong>Index already carried forward.</strong> The {props.indexBridge.index_series} index
+          for {props.indexBridge.requested_quarter} is not a published observation: it is the{' '}
           {props.indexBridge.observation_quarter} value carried forward to{' '}
-          {props.indexBridge.bridged_through_month} with the {props.indexBridge.cpi_series_name} (
+          {props.indexBridge.bridged_through_month} along the published trend of the{' '}
+          {props.indexBridge.series_name || props.indexBridge.cpi_series_name} (
           x{Number(props.indexBridge.cpi_bridge_factor).toFixed(4)}), giving{' '}
           {Number(props.indexBridge.index_value_used).toFixed(2)} against a published{' '}
-          {Number(props.indexBridge.index_value_published).toFixed(2)}. Your shifts below are
-          applied on top of that bridged level. Set the override to replace it outright.
+          {Number(props.indexBridge.index_value_published).toFixed(2)} - the movement to date, not a
+          tender-quarter figure. Your shifts below are applied on top of that level. Set the override
+          to replace it outright.
         </p>
       ) : null}
 

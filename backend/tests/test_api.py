@@ -84,9 +84,12 @@ def test_healthz_returns_200_and_reports_db_connected(client_module) -> None:
     assert body["db"] == "connected"
 
 
-def test_root_endpoint_discloses_placeholder_data(client_module) -> None:
+def test_root_endpoint_discloses_indicative_data(client_module) -> None:
     body = client_module.get("/").json()
-    assert "PLACEHOLDER" in body["data_notice"]
+    notice = body["data_notice"]
+    assert "indicative seed values" in notice
+    assert "trend to date" in notice
+    assert "real tender decision" in notice
 
 
 # --------------------------------------------------------------------------- #

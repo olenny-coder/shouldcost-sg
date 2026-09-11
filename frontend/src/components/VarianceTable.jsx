@@ -1,5 +1,6 @@
 import React, { useMemo, useState } from 'react'
 import { money as moneyFmt, num, pct, BASIS_LABEL } from '../format.js'
+import { bridgeKind, bridgeKindLong } from '../bridge.js'
 import HelpPopout from './HelpPopout.jsx'
 
 const COLUMNS = [
@@ -23,9 +24,10 @@ function flagSummary(line) {
     unit_mismatch: 'unit mismatch',
     unclassified: 'unclassified',
     no_benchmark_rate: 'no benchmark rate',
-    placeholder_benchmark_rate: 'placeholder rate',
+    placeholder_benchmark_rate: 'indicative rate',
     tpi_quarter_fallback: 'TPI quarter fallback',
-    cpi_bridged: 'CPI-bridged index',
+    index_bridged: 'index carried forward',
+    cpi_bridged: 'index carried forward',
     overhead_applied: 'overheads added',
     margin_applied: 'margin added',
     reclassified_manually: 'reclassified',
@@ -202,15 +204,19 @@ export default function VarianceTable(props) {
                   </p>
                   {line.tpi_bridged ? (
                     <p className="small bridge-line">
-                      <strong>Index bridged with the CPI.</strong> Published observation{' '}
-                      {num(line.tpi_value_published, 2)} at {line.tpi_quarter_used}
-                      {' '}({line.index_lag_quarters} quarter(s) stale). Carried forward to{' '}
-                      {line.cpi_month_used} with {line.cpi_series_name}
+                      <strong>
+                        Index carried forward with the {bridgeKindLong(line.index_bridge_kind)}.
+                      </strong>{' '}
+                      Published observation {num(line.tpi_value_published, 2)} at{' '}
+                      {line.tpi_quarter_used} ({line.index_lag_quarters} quarter(s) stale) was
+                      carried forward to {line.cpi_month_used} along the published trend of{' '}
+                      {line.cpi_series_name}
+                      {' '}({bridgeKind(line.index_bridge_kind)})
                       {line.cpi_value_used !== null && line.cpi_value_used !== undefined
                         ? ' = ' + num(line.cpi_value_used, 3) : ''}
-                      , a factor of {num(line.cpi_bridge_factor, 4)}. This is a modelled step, not a
-                      published construction cost observation, so the line is{' '}
-                      <strong>basis: assumed</strong>.
+                      , a factor of {num(line.cpi_bridge_factor, 4)}. The result is derived to show
+                      the trend to date, not a published construction cost observation, so the line
+                      is <strong>basis: assumed</strong>.
                       {line.cpi_source_url ? (
                         <span>
                           {' '}Source:{' '}
@@ -247,7 +253,7 @@ export default function VarianceTable(props) {
                       <br />source_date: {line.provenance.source_date} | base_year: {line.provenance.base_year} | confidence: {line.provenance.confidence}
                       <br />scope_inclusions: {line.provenance.scope_inclusions}
                       <br />scope_exclusions: {line.provenance.scope_exclusions}
-                      <br />is_placeholder: <strong>{String(line.provenance.is_placeholder)}</strong>
+                      <br />is_placeholder (true = indicative seed, not a licensed schedule): <strong>{String(line.provenance.is_placeholder)}</strong>
                       {line.provenance.source_url ? <span><br />source_url: <a href={line.provenance.source_url} target="_blank" rel="noreferrer">{line.provenance.source_url}</a></span> : null}
                     </p>
                     {line.provenance.replace_with ? (

@@ -152,7 +152,9 @@ commented out, so you can enable it in one edit if you upgrade.
      benchmark_rates    10
      boq_uploads        1
      boq_items          20
-   ETL: complete (seed data is synthetic; every row is_placeholder = true)
+   ETL: complete (published index series are real; benchmark rates, regional
+   multipliers and the construction cost index quarters are indicative seed values,
+   every one carrying is_placeholder = true)
    ```
 
    If the Shell tab is unavailable to you, add a temporary **Job** to `render.yaml`
@@ -355,14 +357,21 @@ Expect Mumbai's should-cost to be ~12.8% above Delhi's, and `report.csv` to cont
 `report`, `totals`, `section`, `waterfall`, `line`, `adjustment`, `warning`, `assumption` and
 `source`.
 
-### 10d-4. Verify the real-vs-placeholder labelling
+### 10d-4. Verify the published-vs-indicative labelling
 
 ```bash
 curl "https://<your-service>.onrender.com/api/indices/materials?country=SG" | head -c 400
+curl "https://<your-service>.onrender.com/api/indices/coverage?country=IN" | head -c 400
 ```
 
 Every Singapore material row must carry `"is_placeholder": false` and a `provenance_note`
 starting `REAL DATA.`. If any row says `true`, the seed did not load correctly.
+
+The coverage call must show `"producer_series_count": 16` and `"uncovered_sections": []` (or just
+`Unclassified`) for India: that proves the producer price index seed loaded and that every canonical
+section has a published series able to re-price it. Singapore must show
+`"producer_series_count": 0` and a `notes` entry naming M213461/M213411 - the documented gap, not a
+failed seed.
 
 ### 10e. Full UI check
 
@@ -529,9 +538,11 @@ Every free option above shares the same three problems, and they are worth stati
    unacceptable for a tender review with a client watching.
 2. **The app has no authentication.** Every endpoint is open. Do not put a real commercial Bill of
    Quantities on a public free URL.
-3. **The benchmark rates are synthetic.** CPWD DSR and BCA Construction InfoNet are licensed
-   publications, so the 20 rate rows are placeholders. Free hosting is not the blocker to
-   production here - licensing and auth are.
+3. **The benchmark rates are indicative seed values, not published data.** CPWD DSR and BCA
+   Construction InfoNet are licensed publications, so the 20 rate rows carry `is_placeholder: true`,
+   a source URL and a TODO. The published index series are real, and the figures the engine derives
+   from them are labelled as derived. Free hosting is not the blocker to production here - licensing
+   and auth are.
 
 If this is going in front of real tender work, budget for a paid instance (Render from ~$7/mo) for
 the always-on API, and treat the hosting spend as the smallest line in the project.

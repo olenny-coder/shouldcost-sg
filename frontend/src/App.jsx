@@ -75,8 +75,11 @@ export default function App() {
   const [countryCode, setCountryCode] = useState('SG')
 
   const [tpiRows, setTpiRows] = useState([])
-  const [cpiRows, setCpiRows] = useState([])
+  // Every monthly price observation for the market, producer and consumer alike.
+  // The dashboard splits it by kind; the engine prefers the producer series.
+  const [priceRows, setPriceRows] = useState([])
   const [freshness, setFreshness] = useState(null)
+  const [indexCoverage, setIndexCoverage] = useState(null)
   const [materialRows, setMaterialRows] = useState([])
   const [benchmarkRates, setBenchmarkRates] = useState([])
   const [classifierRules, setClassifierRules] = useState(null)
@@ -93,8 +96,10 @@ export default function App() {
   const [tpiSeries, setTpiSeries] = useState('BCA')
   const [threshold, setThreshold] = useState('15')
   // How a stale index observation is brought up to the tender quarter.
-  // 'cpi' (default) bridges it with the consumer price index; 'none' holds it.
-  const [bridgeMode, setBridgeMode] = useState('cpi')
+  // 'auto' (default) bridges it with a PRODUCER price index where the market
+  // publishes one, falling back to the consumer index; 'ppi' and 'cpi' force one
+  // kind or the other; 'none' holds the last published observation.
+  const [bridgeMode, setBridgeMode] = useState('auto')
   const [adjustments, setAdjustments] = useState(NO_ADJUSTMENTS)
   // Analyst-supplied rates for lines the library cannot price, keyed by item id.
   const [manualRates, setManualRates] = useState({})
@@ -149,11 +154,13 @@ export default function App() {
           api.listUploads(countryCode),
           api.listRegions({ country: countryCode }),
           api.listCpi({ country: countryCode }),
+          api.indexCoverage({ country: countryCode }),
         ])
         if (cancelled) return
         const tpi = responses[0]
         setTpiRows(tpi)
-        setCpiRows(responses[6])
+        setPriceRows(responses[6])
+        setIndexCoverage(responses[7])
         setMaterialRows(responses[1])
         setBenchmarkRates(responses[2])
         setClassifierRules(responses[3])
@@ -397,7 +404,15 @@ export default function App() {
   }
 
   // ----------------------------------------------------------------- render --
-  const placeholderLineCount = result
+  const cpiRows = useMemo(function () {
+    return priceRows.filter(function (row) { return row.kind !== 'PPI' })
+  }, [priceRows])
+  const ppiRows = useMemo(function () {
+    return priceRows.filter(function (row) { return row.kind === 'PPI' })
+  }, [priceRows])
+  // Lines the engine could only price with an indicative seed rate rather than a
+  // published schedule of rates. Reported, never hidden.
+  const indicativeLineCount = result
     ? result.lines.filter(function (l) { return l.provenance && l.provenance.is_placeholder }).length
     : 0
   const adjustmentsActive = result && result.adjustments_applied && !result.adjustments_applied.is_noop
@@ -424,15 +439,17 @@ export default function App() {
     tpiRows.forEach(function (row) { if (set.indexOf(row.quarter) === -1) set.push(row.quarter) })
     if (!set.length) return ['2024Q4']
     // A tender priced today may fall in a quarter the index has not published
-    // yet. Those quarters ARE selectable: the index is bridged with the CPI (or
-    // held, when bridging is switched off), and the selector says which.
+    // yet. Those quarters ARE selectable: the index is carried forward along the
+    // published trend of a price index (or held, when bridging is switched off),
+    // and the selector says which.
     const sorted = set.slice().sort()
     const lastPublished = sorted[sorted.length - 1]
-    const cpiMonths = cpiRows.map(function (row) { return row.month }).sort()
-    const latestCpiQuarter = cpiMonths.length
+    const priceMonths = priceRows.map(function (row) { return row.month }).sort()
+    const cpiMonths = priceMonths
+    const latestCpiQuarter = priceMonths.length
       ? quarterLabel(
-          Number(cpiMonths[cpiMonths.length - 1].slice(0, 4)),
-          Math.floor((Number(cpiMonths[cpiMonths.length - 1].slice(5, 7)) - 1) / 3) + 1,
+          Number(priceMonths[priceMonths.length - 1].slice(0, 4)),
+          Math.floor((Number(priceMonths[priceMonths.length - 1].slice(5, 7)) - 1) / 3) + 1,
         )
       : lastPublished
     const reach = [currentCalendarQuarter(), latestCpiQuarter, lastPublished].sort().slice(-1)[0]
@@ -440,7 +457,7 @@ export default function App() {
       if (set.indexOf(quarter) === -1) set.push(quarter)
     })
     return set.sort().reverse()
-  }, [tpiRows, cpiRows])
+  }, [tpiRows, priceRows])
 
   const seriesNames = useMemo(function () {
     const set = []
@@ -505,13 +522,19 @@ export default function App() {
       </div>
 
       <div className="notice notice-warn">
-        <strong>Demonstration build.</strong> The bundled <em>index values</em> and benchmark rates
-        for both markets are synthetic placeholders carrying <code>is_placeholder: true</code>, a{' '}
-        <code>source_url</code> and a <code># TODO: replace with actual ...</code> marker. Do not
-        use for a real tender decision. The monthly <strong>consumer price index</strong> used to
-        carry a stale index forward to the tender quarter, the India <strong>WPI</strong> series and
-        the material price series <em>are</em> real published data - the index dashboard marks each
-        row real or placeholder.
+        <strong>Read this before relying on a number.</strong> The published <em>index series</em>{' '}
+        are real: the monthly <strong>producer price index</strong> for India (Office of the
+        Economic Adviser), the <strong>consumer price index</strong> for both markets, the India{' '}
+        <strong>WPI</strong> quarters and the material price series all come from the named
+        statistical publication. What is <em>derived</em> is everything the engine does with them -
+        a stale index is carried forward along the published trend to show the movement to date,
+        which is a modelled step and is reported as <code>basis: assumed</code> on every line it
+        touches. The <strong>benchmark rate library</strong> and the{' '}
+        <strong>regional multipliers</strong> are indicative seed values, because the schedules of
+        rates behind them (CPWD DSR, BCA InfoNet, SISV) are licensed publications - they carry{' '}
+        <code>is_placeholder: true</code>, a <code>source_url</code> and a{' '}
+        <code># TODO: replace with actual ...</code> marker. Do not use these figures for a real
+        tender decision. The index dashboard shows which basis every row is on.
       </div>
 
       {result ? (
@@ -571,8 +594,8 @@ export default function App() {
             </div>
             <div className="tile-sub">
               {result.index_bridge && result.index_bridge.applied
-                ? 'last published observation - bridged to ' + result.index_bridge.bridged_through_month
-                  + ' with ' + result.index_bridge.cpi_series_name
+                ? 'last published observation - carried forward to ' + result.index_bridge.bridged_through_month
+                  + ' with ' + (result.index_bridge.series_name || result.index_bridge.cpi_series_name)
                   + ' (x' + Number(result.index_bridge.cpi_bridge_factor).toFixed(4) + ')'
                 : result.index_bridge && result.index_bridge.lag_quarters > 0
                   ? 'held at the last published observation, '
@@ -708,7 +731,10 @@ export default function App() {
       {tab === 'indices' ? (
         <IndexDashboard
           tpiRows={tpiRows}
+          priceRows={priceRows}
           cpiRows={cpiRows}
+          ppiRows={ppiRows}
+          coverage={indexCoverage}
           freshness={freshness}
           indexBridge={result ? result.index_bridge : null}
           materialRows={materialRows}
@@ -735,7 +761,7 @@ export default function App() {
         <AssumptionsPanel
           warnings={result.warnings}
           assumptions={result.assumptions}
-          placeholderLineCount={placeholderLineCount}
+          indicativeLineCount={indicativeLineCount}
           adjustmentsActive={adjustmentsActive}
           indexBridge={result.index_bridge}
         />
@@ -746,7 +772,7 @@ export default function App() {
       ) : null}
 
       <footer className="app-footer muted">
-        Sources referenced by the seed data (all values synthetic). <strong>Singapore:</strong> BCA
+        Sources referenced by the seed data. <strong>Singapore:</strong> BCA
         Tender Price Index (2010 = 100), SISV Tender Price Index circulars, BCA Construction InfoNet,
         SingStat / BCA material price series, RLB Rider's Digest, Arcadis Quarterly Cost Review,
         SMM2 (Standard Method of Measurement, 2nd Edition). <strong>India:</strong> CPWD Cost Index

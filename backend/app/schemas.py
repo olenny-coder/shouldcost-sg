@@ -295,13 +295,14 @@ class BenchmarkRequest(BaseModel):
     region_code: str | None = Field(
         None, description="Regional cost multiplier within the country, e.g. IN: DEL | MUM | BLR."
     )
-    index_bridge: Literal["cpi", "none"] = Field(
-        "cpi",
+    index_bridge: Literal["auto", "ppi", "cpi", "none"] = Field(
+        "auto",
         description=(
-            "How a stale index observation is brought up to the tender quarter. 'cpi' (default) "
-            "carries the last published observation forward by the observed change in the "
-            "national consumer price index, and marks every affected line basis='assumed' with "
-            "the cpi_bridged flag. 'none' holds the last observation unchanged and warns that "
+            "How a stale index observation is brought up to the tender quarter. 'auto' (default) "
+            "carries the last published observation forward by the observed change in a PRODUCER "
+            "price index, falling back to the CONSUMER price index only when no producer series "
+            "spans the window; every affected line is marked basis='assumed' and flagged. 'ppi' "
+            "and 'cpi' force one kind. 'none' holds the last observation unchanged and warns that "
             "the index is stale."
         ),
     )
@@ -364,9 +365,12 @@ class BenchmarkLine(ORMModel):
     tpi_ratio: float
     tpi_fallback_used: bool
 
-    # CPI bridge: how the index value for the tender quarter was obtained when the
-    # selected series had not published that quarter yet.
+    # Index bridge: how the index value for the tender quarter was obtained when the
+    # selected series had not published that quarter yet. The bridge runs on a
+    # producer price index where the market publishes one, so the kind is reported
+    # alongside the series name rather than assumed.
     tpi_bridged: bool = False
+    index_bridge_kind: str = ""
     cpi_bridge_factor: float = 1.0
     cpi_series_name: str = ""
     cpi_month_used: str = ""
@@ -493,8 +497,8 @@ class SensitivityRequest(BaseModel):
         description="Symmetric +/- percentage applied to one section at a time for the tornado.",
     )
     region_code: str | None = None
-    index_bridge: Literal["cpi", "none"] = Field(
-        "cpi", description="Same meaning as on POST /api/boq/{id}/benchmark."
+    index_bridge: Literal["auto", "ppi", "cpi", "none"] = Field(
+        "auto", description="Same meaning as on POST /api/boq/{id}/benchmark."
     )
     adjustments: IndexAdjustments | None = None
     manual_rates: dict[str, ManualRate] = Field(default_factory=dict)
@@ -579,4 +583,40 @@ class IndexFreshnessOut(BaseModel):
     # Every consumer price series available here, with its coverage, so the UI can
     # show why a bridge did or did not happen.
     cpi_series_list: list[dict] = Field(default_factory=list)
+    # The producer side. A producer price index is tried FIRST because it measures
+    # what suppliers charge for the materials a construction rate is made of; the
+    # consumer index is the fallback. Empty means this market has no usable PPI.
+    ppi_series_name: str = ""
+    ppi_series_available: bool = False
+    ppi_latest_month: str | None = None
+    ppi_latest_value: float | None = None
+    ppi_base_year: int | None = None
+    ppi_observations: int = 0
+    ppi_source_url: str = ""
+    ppi_series_list: list[dict] = Field(default_factory=list)
+    # "producer" | "consumer" | "none" - which kind the engine will actually reach for.
+    bridge_preference: str = "none"
     series: list[dict] = Field(default_factory=list)
+
+
+class IndexCoverageOut(BaseModel):
+    """Section-by-section coverage of the loaded price series for one market.
+
+    Answers: for each canonical measurement section, which published producer and
+    consumer series can re-price it, and where is the gap? A section with no covering
+    series is held at base year by the benchmark, so it is named explicitly rather
+    than left to be inferred from the data.
+    """
+
+    country: str
+    country_name: str
+    classification_standard: str
+    preferred_producer_series: str = ""
+    preferred_consumer_series: str = ""
+    producer_series_count: int = 0
+    consumer_series_count: int = 0
+    sections: list[dict] = Field(default_factory=list)
+    uncovered_sections: list[str] = Field(default_factory=list)
+    producer_covered_sections: list[str] = Field(default_factory=list)
+    labour_dominated_sections: list[str] = Field(default_factory=list)
+    notes: list[str] = Field(default_factory=list)

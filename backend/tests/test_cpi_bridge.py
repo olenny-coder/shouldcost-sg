@@ -177,7 +177,7 @@ def test_bridged_run_marks_every_line_assumed_and_flagged(session) -> None:
     assert benchmarked, "the sample BoQ must produce benchmarked lines"
     for line in benchmarked:
         assert line.tpi_bridged is True
-        assert "cpi_bridged" in line.flags
+        assert "index_bridged" in line.flags
         assert line.basis == "assumed"
         assert line.cpi_bridge_factor != 1.0
         assert line.cpi_month_used == "2026-07"
@@ -269,7 +269,7 @@ def test_bridge_can_be_switched_off_and_holds_the_observation(session) -> None:
         assert line.tpi_bridged is False
         assert line.tpi_value == pytest.approx(line.tpi_value_published)
         assert line.cpi_bridge_factor == 1.0
-        assert "cpi_bridged" not in line.flags
+        assert "index_bridged" not in line.flags
     assert result.totals["index_bridge_applied"] is False
     assert any("switched OFF" in w for w in result.warnings)
 
@@ -281,7 +281,7 @@ def test_no_bridge_when_the_series_covers_the_quarter(session) -> None:
     assert result.index_bridge["lag_quarters"] == 0
     components = {w["component"]: w["amount"] for w in result.waterfall}
     assert components["cpi_bridge"] == 0.0
-    assert not any("cpi_bridged" in line.flags for line in result.lines)
+    assert not any("index_bridged" in line.flags for line in result.lines)
     assert result.totals["basis"] == "derived"
 
 
@@ -347,7 +347,7 @@ def test_absolute_override_replaces_the_bridged_level(session) -> None:
     # An override is a full replacement, so the bridge contributes nothing.
     components = {w["component"]: w["amount"] for w in result.waterfall}
     assert components["cpi_bridge"] == pytest.approx(0.0, abs=0.01)
-    assert "cpi_bridged" in line.flags  # the line is still disclosed as modelled
+    assert "index_bridged" in line.flags  # the line is still disclosed as modelled
 
 
 def test_scope_exclusion_still_cancels_under_a_bridge(session) -> None:
@@ -579,11 +579,29 @@ def test_india_cpi_values_match_the_published_series(session) -> None:
     assert _cpi_value(session, "2025-12", "IN", "CPI-ALL-2012") == pytest.approx(198.0, abs=1e-9)
 
 
-def test_india_bridge_uses_the_current_base_series(session) -> None:
-    # WPI-CONST published 2026Q2; pricing 2026Q3 needs the current 2024-based CPI.
+def test_india_bridge_prefers_the_producer_index(session) -> None:
+    """WPI-CONST published 2026Q2; pricing 2026Q3 is carried on the PRODUCER index.
+
+    India publishes a commodity-level PPI, so the default (auto) bridge must take it
+    rather than the consumer index: producer prices measure what suppliers charge for
+    the materials a construction rate is built from.
+    """
     tpi = resolve_tpi(session, "WPI-CONST", BRIDGED_QUARTER, country="IN")
     bridge = tpi.bridge
     assert bridge.applied is True
+    assert bridge.kind == "PPI", "a producer index must be reached first"
+    assert bridge.series_name == "PPI-ALL"
+    assert bridge.from_months == ["2026-04", "2026-05", "2026-06"]
+    assert bridge.to_months == ["2026-07"]
+    assert tpi.value == pytest.approx(tpi.value_published * bridge.factor, abs=1e-9)
+
+
+def test_india_bridge_uses_the_current_consumer_base_when_cpi_is_forced(session) -> None:
+    """With mode='cpi' the current 2024-based consumer series must be preferred."""
+    tpi = resolve_tpi(session, "WPI-CONST", BRIDGED_QUARTER, country="IN", bridge="cpi")
+    bridge = tpi.bridge
+    assert bridge.applied is True
+    assert bridge.kind == "CPI"
     assert bridge.series_name == "CPI-ALL", "the current base must be preferred"
     assert bridge.from_months == ["2026-04", "2026-05", "2026-06"]
     assert bridge.to_months == ["2026-07"]
@@ -594,7 +612,7 @@ def test_india_bridge_uses_the_current_base_series(session) -> None:
 
 def test_india_bridge_spans_the_rebase_via_the_back_cast_months(session) -> None:
     """A 2024Q4 index observation is bridged on ONE base, thanks to the back-cast."""
-    tpi = resolve_tpi(session, "CPWD", "2025Q2", country="IN")
+    tpi = resolve_tpi(session, "CPWD", "2025Q2", country="IN", bridge="cpi")
     bridge = tpi.bridge
     assert bridge.applied is True
     assert bridge.series_name == "CPI-ALL"
@@ -657,12 +675,24 @@ def test_freshness_endpoint_lists_every_cpi_series(client_module) -> None:
         "/api/indices/freshness", params={"country": "IN", "reference_quarter": "2026Q3"}
     ).json()
     names = {row["series_name"] for row in payload["cpi_series_list"]}
-    assert "CPI-ALL" in names
-    assert any(name.startswith("PPI-") for name in names)
+    assert names == {"CPI-ALL", "CPI-ALL-2012"}, "the consumer list carries consumer series only"
     preferred = [row for row in payload["cpi_series_list"] if row["is_preferred"]]
     assert len(preferred) == 1
+    assert preferred[0]["series_name"] == "CPI-ALL"
     assert preferred[0]["base_year"] == 2024
     assert payload["cpi_latest_month"] == "2026-07"
+
+    # The producer side is reported separately, and it is what the bridge reaches for.
+    ppi_names = {row["series_name"] for row in payload["ppi_series_list"]}
+    assert "PPI-ALL" in ppi_names
+    assert len(ppi_names) > 1, "India publishes a commodity-level producer index"
+    assert [row for row in payload["ppi_series_list"] if row["is_preferred"]][0][
+        "series_name"
+    ] == "PPI-ALL"
+    assert payload["ppi_series_available"] is True
+    assert payload["bridge_preference"] == "producer"
+
     by_series = {row["series_name"]: row for row in payload["series"]}
     assert by_series["WPI-CONST"]["bridge"]["applied"] is True
-    assert by_series["WPI-CONST"]["bridge"]["cpi_series_name"] == "CPI-ALL"
+    assert by_series["WPI-CONST"]["bridge"]["kind"] == "PPI"
+    assert by_series["WPI-CONST"]["bridge"]["series_name"] == "PPI-ALL"
