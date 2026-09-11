@@ -27,9 +27,12 @@ class Country:
     measurement_note: str
     default_tpi_series: str
     unit_convention: str
-    # The monthly consumer price series used to carry a stale index observation
-    # forward to the tender quarter. Empty means no bridge is available and the
-    # engine falls back to holding the last observation, with a warning.
+    # The monthly price series used to carry a stale index observation forward to
+    # the tender quarter. A PRODUCER price index is preferred - it measures what
+    # manufacturers charge for cement, steel, minerals and power, which is what a
+    # construction rate is made of - and the consumer index is the fallback.
+    # Empty means that kind is unavailable for the market.
+    default_ppi_series: str = ""
     default_cpi_series: str = ""
     sources: tuple[Source, ...] = field(default_factory=tuple)
 
@@ -45,8 +48,12 @@ SINGAPORE = Country(
         "The industry classification standard used for Singapore building Bills of Quantities."
     ),
     default_tpi_series="BCA",
-    unit_convention="Metric SI. Rates are per m, m2, m3, tonne or lump sum.",
+    # Singapore publishes producer price indices, but the machine-readable ones are
+    # annual and 1-digit (SingStat M213461 / M213411) - too coarse to carry a
+    # quarterly observation forward. No usable PPI, so the bridge falls back to CPI.
+    default_ppi_series="",
     default_cpi_series="CPI-ALL",
+    unit_convention="Metric SI. Rates are per m, m2, m3, tonne or lump sum.",
     sources=(
         Source("BCA Tender Price Index (TPI)", "https://www1.bca.gov.sg/",
                "Tender price movement for building works, base 2010 = 100. Excludes piling, "
@@ -85,8 +92,11 @@ INDIA = Country(
         "compatibility of the API."
     ),
     default_tpi_series="WPI-CONST",
-    unit_convention="Metric SI. Rates are per m, m2, m3, tonne or lump sum, in Indian Rupees.",
+    # India publishes a producer price index monthly and at commodity level
+    # (Office of the Economic Adviser, base 2022-23). CPI-ALL is the fallback.
+    default_ppi_series="PPI-ALL",
     default_cpi_series="CPI-ALL",
+    unit_convention="Metric SI. Rates are per m, m2, m3, tonne or lump sum, in Indian Rupees.",
     sources=(
         Source("CPWD Cost Index", "https://cpwd.gov.in/",
                "Central Public Works Department construction cost index, used with DSR and "
@@ -160,6 +170,7 @@ def registry_as_dicts() -> list[dict]:
                 "measurement_note": country.measurement_note,
                 "default_tpi_series": country.default_tpi_series,
                 "default_cpi_series": country.default_cpi_series,
+                "default_ppi_series": country.default_ppi_series,
                 "unit_convention": country.unit_convention,
                 "sources": [
                     {"name": s.name, "url": s.url, "what": s.what} for s in country.sources

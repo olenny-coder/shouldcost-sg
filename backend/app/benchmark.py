@@ -50,7 +50,7 @@ from sqlalchemy.orm import Session
 
 from . import classifier
 from .countries import DEFAULT_COUNTRY, Country, get_country
-from .models import BenchmarkRate, BoQItem, CPISeries, RegionalFactor, TPISeries
+from .models import BenchmarkRate, BoQItem, PriceSeries, RegionalFactor, TPISeries
 
 BASIS_MEASURED = "measured"
 BASIS_DERIVED = "derived"
@@ -76,8 +76,21 @@ CONFIDENCE_ORDER = {"high": 0, "medium": 1, "low": 2}
 # How a stale index observation is brought up to the tender quarter.
 #   "cpi"  - carry it forward by the observed CPI movement (default)
 #   "none" - hold the last observation and say so
+BRIDGE_PPI = "ppi"
 BRIDGE_CPI = "cpi"
+BRIDGE_AUTO = "auto"
 BRIDGE_NONE = "none"
+
+
+def _normalise_bridge_mode(mode: str | None) -> str:
+    """Validate the requested bridge mode, defaulting to producer-then-consumer."""
+    value = (mode or BRIDGE_AUTO).strip().lower()
+    if value not in {BRIDGE_AUTO, BRIDGE_PPI, BRIDGE_CPI, BRIDGE_NONE}:
+        raise ValueError(
+            f"Unknown index_bridge mode {mode!r}. Use one of: "
+            f"{BRIDGE_AUTO}, {BRIDGE_PPI}, {BRIDGE_CPI}, {BRIDGE_NONE}."
+        )
+    return value
 BRIDGE_MODES = (BRIDGE_CPI, BRIDGE_NONE)
 
 _QUARTER_RE = re.compile(r"^(\d{4})\s*[Qq]([1-4])$")
@@ -197,7 +210,7 @@ class CPIBridge:
     requested_quarter: str
     observation_quarter: str
     lag_quarters: int
-    requested_mode: str = BRIDGE_CPI
+    requested_mode: str = BRIDGE_AUTO
     from_value: float | None = None
     from_months: list[str] = field(default_factory=list)
     to_value: float | None = None
@@ -205,6 +218,8 @@ class CPIBridge:
     covered_through_month: str | None = None
     shortfall_months: int = 0
     factor: float = 1.0
+    # PPI or CPI - which price index carried the observation forward.
+    kind: str = "CPI"
     base_year: int | None = None
     base_value: float | None = None
     currency: str = ""
@@ -244,6 +259,7 @@ class CPIBridge:
             "applied": self.applied,
             "reason": self.reason,
             "mode": self.requested_mode,
+            "kind": self.kind,
             "series_name": self.series_name,
             "requested_quarter": self.requested_quarter,
             "observation_quarter": self.observation_quarter,
@@ -288,15 +304,15 @@ class CPIBridge:
         }
 
 
-def _cpi_rows(session: Session, country: str, series_name: str = "") -> list[CPISeries]:
-    statement = select(CPISeries).where(CPISeries.country == country)
+def _price_rows(session: Session, country: str, series_name: str = "") -> list[PriceSeries]:
+    statement = select(PriceSeries).where(PriceSeries.country == country)
     if series_name:
-        statement = statement.where(CPISeries.series_name == series_name.strip().upper())
-    return list(session.scalars(statement.order_by(CPISeries.series_name, CPISeries.month)))
+        statement = statement.where(PriceSeries.series_name == series_name.strip().upper())
+    return list(session.scalars(statement.order_by(PriceSeries.series_name, PriceSeries.month)))
 
 
 def _bridge_with_series(
-    rows: list[CPISeries],
+    rows: list[PriceSeries],
     *,
     requested_quarter: str,
     observation_quarter: str,
@@ -308,6 +324,7 @@ def _bridge_with_series(
     """
     series_name = rows[0].series_name
     bridge = CPIBridge(
+        kind=getattr(rows[0], "kind", "CPI"),
         applied=False,
         reason="",
         country=rows[0].country,
@@ -371,13 +388,13 @@ def _bridge_with_series(
     return bridge
 
 
-def resolve_cpi_bridge(
+def resolve_index_bridge(
     session: Session,
     *,
     country: str,
     observation_quarter: str,
     requested_quarter: str,
-    mode: str = BRIDGE_CPI,
+    mode: str = BRIDGE_AUTO,
     published_index_value: float | None = None,
 ) -> CPIBridge:
     """Carry a stale index observation forward using the observed CPI movement.
@@ -406,33 +423,47 @@ def resolve_cpi_bridge(
         requested_quarter=requested_quarter,
         observation_quarter=observation_quarter,
         lag_quarters=lag,
-        requested_mode=(
-            BRIDGE_NONE if (mode or BRIDGE_CPI).strip().lower() == BRIDGE_NONE else BRIDGE_CPI
-        ),
+        requested_mode=_normalise_bridge_mode(mode),
         published_index_value=published_index_value,
     )
 
     if lag <= 0:
         bridge.reason = "index_observation_covers_requested_quarter"
         return bridge
-    if (mode or BRIDGE_CPI).strip().lower() == BRIDGE_NONE:
+    if _normalise_bridge_mode(mode) == BRIDGE_NONE:
         bridge.reason = "bridge_disabled_by_analyst"
         return bridge
-    if not preferred:
-        bridge.reason = "no_cpi_series_configured_for_country"
-        return bridge
 
-    rows = _cpi_rows(session, code)
+    rows = _price_rows(session, code)
     if not rows:
-        bridge.reason = "no_cpi_observations_loaded"
+        bridge.reason = "no_price_observations_loaded"
         return bridge
 
-    by_series: dict[str, list[CPISeries]] = {}
+    by_series: dict[str, list[PriceSeries]] = {}
     for row in rows:
         by_series.setdefault(row.series_name, []).append(row)
 
-    order = [name for name in (preferred,) if name in by_series]
-    order += [name for name in sorted(by_series) if name not in order]
+    # PRODUCER INDICES FIRST. A PPI measures what manufacturers and utilities
+    # charge for cement, steel, non-metallic minerals and power - the inputs a
+    # construction rate is actually made of. A CPI measures what households pay,
+    # a weaker proxy, so it is only reached when no producer series spans both
+    # endpoints. See PriceSeries.
+    producer = sorted({n for n, rs in by_series.items() if rs[0].kind == "PPI"})
+    consumer = sorted({n for n, rs in by_series.items() if rs[0].kind != "PPI"})
+
+    requested = _normalise_bridge_mode(mode)
+    if requested == BRIDGE_PPI:
+        consumer = []
+    elif requested == BRIDGE_CPI:
+        producer = []
+
+    preferred_ppi = (getattr(registry, "default_ppi_series", "") or "").upper()
+    preferred_cpi = (preferred or "").upper()
+
+    def _ordered(names: list[str], first: str) -> list[str]:
+        return ([first] if first in names else []) + [n for n in names if n != first]
+
+    order = _ordered(producer, preferred_ppi) + _ordered(consumer, preferred_cpi)
 
     attempts: list[dict] = []
     for name in order:
@@ -457,7 +488,7 @@ def resolve_cpi_bridge(
         )
 
     bridge.reason = (
-        "no_cpi_series_covers_both_quarters"
+        "no_price_series_covers_both_quarters"
         if len(attempts) > 1
         else attempts[0]["reason"]
     )
@@ -565,7 +596,7 @@ def resolve_tpi(
             f"{format_quarter(earliest // 4, earliest % 4)}."
         )
     row = by_key[prior[0]]
-    cpi_bridge = resolve_cpi_bridge(
+    cpi_bridge = resolve_index_bridge(
         session,
         country=code,
         observation_quarter=row.quarter,
@@ -936,7 +967,7 @@ def build_benchmark(
     region_code: str | None = None,
     adjustments=None,
     manual_rates=None,
-    index_bridge: str = BRIDGE_CPI,
+    index_bridge: str = BRIDGE_AUTO,
 ) -> BenchmarkComputation:
     registry: Country = get_country(country)
     applied = _adjustments_dict(adjustments)
@@ -1872,7 +1903,7 @@ def compute_sensitivity(
     region_code: str | None = None,
     adjustments=None,
     manual_rates=None,
-    index_bridge: str = BRIDGE_CPI,
+    index_bridge: str = BRIDGE_AUTO,
 ) -> dict:
     """Sweep the index value and each section's rate, and report the effect.
 

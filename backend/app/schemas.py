@@ -77,7 +77,7 @@ class RegionalFactorOut(ORMModel):
     replace_with: str = ""
 
 
-class CPIPointOut(ORMModel):
+class PricePointOut(ORMModel):
     """One monthly consumer price index observation.
 
     These are REAL published values for both markets, and they are what the engine

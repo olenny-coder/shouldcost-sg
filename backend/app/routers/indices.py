@@ -14,7 +14,7 @@ from sqlalchemy.orm import Session
 from .. import benchmark, classifier, schemas
 from ..countries import DEFAULT_COUNTRY, UnknownCountryError, get_country
 from ..db import get_db
-from ..models import BenchmarkRate, CPISeries, MaterialPrice, RegionalFactor, TPISeries
+from ..models import BenchmarkRate, PriceSeries, MaterialPrice, RegionalFactor, TPISeries
 
 router = APIRouter(prefix="/api/indices", tags=["indices"])
 
@@ -66,14 +66,14 @@ def list_materials(
     return [schemas.MaterialPointOut.model_validate(r) for r in rows]
 
 
-@router.get("/cpi", response_model=list[schemas.CPIPointOut])
-def list_cpi(
+@router.get("/price-series", response_model=list[schemas.PricePointOut])
+def list_price_series(
     series: str | None = Query(None, description="e.g. CPI-ALL"),
     country: str = Query(DEFAULT_COUNTRY, description="SG | IN"),
     from_month: str | None = Query(None, description="Inclusive, e.g. 2022-01"),
     to_month: str | None = Query(None, description="Inclusive, e.g. 2026-07"),
     db: Session = Depends(get_db),
-) -> list[schemas.CPIPointOut]:
+) -> list[schemas.PricePointOut]:
     """The monthly consumer price series used to carry a stale index forward.
 
     Real published data for both markets. Served from the local database: the app
@@ -82,15 +82,15 @@ def list_cpi(
     code = _country(country)
     registry = get_country(code)
     name = (series or registry.default_cpi_series or "").strip().upper()
-    statement = select(CPISeries).where(CPISeries.country == code)
+    statement = select(PriceSeries).where(PriceSeries.country == code)
     if name:
-        statement = statement.where(CPISeries.series_name == name)
-    rows = list(db.scalars(statement.order_by(CPISeries.series_name, CPISeries.month)))
+        statement = statement.where(PriceSeries.series_name == name)
+    rows = list(db.scalars(statement.order_by(PriceSeries.series_name, PriceSeries.month)))
     if from_month:
         rows = [r for r in rows if r.month >= from_month.strip()]
     if to_month:
         rows = [r for r in rows if r.month <= to_month.strip()]
-    return [schemas.CPIPointOut.model_validate(r) for r in rows]
+    return [schemas.PricePointOut.model_validate(r) for r in rows]
 
 
 @router.get("/freshness", response_model=schemas.IndexFreshnessOut)
@@ -130,9 +130,9 @@ def index_freshness(
 
     cpi_rows = list(
         db.scalars(
-            select(CPISeries)
-            .where(CPISeries.country == code)
-            .order_by(CPISeries.series_name, CPISeries.month)
+            select(PriceSeries)
+            .where(PriceSeries.country == code)
+            .order_by(PriceSeries.series_name, PriceSeries.month)
         )
     )
     default_cpi = (registry.default_cpi_series or "").upper()
@@ -140,7 +140,7 @@ def index_freshness(
     # loaded too (India carries the 2024-based series and its predecessor, which do
     # not overlap), and the engine will use whichever one spans both bridge
     # endpoints. All of them are reported here with their coverage.
-    grouped_cpi: dict[str, list[CPISeries]] = {}
+    grouped_cpi: dict[str, list[PriceSeries]] = {}
     for row in cpi_rows:
         grouped_cpi.setdefault(row.series_name, []).append(row)
     default_rows = grouped_cpi.get(default_cpi, [])
@@ -175,7 +175,7 @@ def index_freshness(
     for name in sorted(grouped):
         rows = grouped[name]
         latest = rows[-1]
-        bridge = benchmark.resolve_cpi_bridge(
+        bridge = benchmark.resolve_index_bridge(
             db,
             country=code,
             observation_quarter=latest.quarter,

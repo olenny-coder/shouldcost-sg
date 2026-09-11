@@ -94,27 +94,43 @@ class MaterialPrice(Base):
     )
 
 
-class CPISeries(Base):
-    """Monthly consumer price index observation.
+class PriceSeries(Base):
+    """Monthly producer or consumer price index observation.
 
-    Published TPI / WPI series lag the tender quarter: the BCA series is a
-    quarterly release, and the WPI for a month appears about two months after the
-    month ends. The CPI for the same country is published monthly and is
-    therefore the most timely official price indicator available.
+    Published construction cost series lag the tender quarter: the BCA TPI is a
+    quarterly release, and a monthly WPI/PPI appears roughly two months after the
+    month ends. To carry a stale observation forward to the tender quarter the
+    engine bridges it with a price index that IS current.
 
-    When the requested tender quarter is later than the last observation of the
-    selected index series, the engine carries that last observation forward by
-    the observed CPI movement between the two quarters. That bridge is a MODELLED
-    step, not an observation of construction cost, so it is disclosed as an
-    assumption on every affected line. See README "Keeping the indexes current".
+    PRODUCER indices come first. A producer price index measures what
+    manufacturers and utilities charge for outputs - cement, iron and steel,
+    non-metallic minerals, electricity - which is what actually moves a
+    construction rate. A consumer price index measures what households pay, which
+    is a weaker but far more widely published proxy.
+
+    The bridge therefore tries, in order:
+
+      1. a producer price index (kind = "PPI"),
+      2. a consumer price index (kind = "CPI") if no producer series can span
+         both endpoints.
+
+    Either way the bridge is a MODELLED step, not an observation of construction
+    cost, so it is disclosed as an assumption on every affected line. See README
+    "Keeping the indexes current".
     """
 
-    __tablename__ = "cpi_series"
+    __tablename__ = "price_series"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     country: Mapped[str] = mapped_column(String(2), nullable=False, index=True, default="SG")
-    # e.g. CPI-ALL - the all-items series. The bridge uses one series per country.
+    # PPI before CPI: see the class docstring.
+    kind: Mapped[str] = mapped_column(String(3), nullable=False, index=True, default="CPI")
+    # e.g. PPI-CEM, CPI-ALL. The bridge picks the first series that spans the lag.
     series_name: Mapped[str] = mapped_column(String(16), nullable=False, index=True)
+    title: Mapped[str] = mapped_column(String(255), nullable=False, default="")
+    # The SMM2 / IS 1200 sections this commodity basket actually feeds, semicolon
+    # separated. Lets a bridge be traced to the trades it moves.
+    scope_sections: Mapped[str] = mapped_column(Text, nullable=False, default="")
     month: Mapped[str] = mapped_column(String(7), nullable=False, index=True)
     base_year: Mapped[int] = mapped_column(Integer, nullable=False, default=2024)
     base_value: Mapped[float] = mapped_column(Float, nullable=False, default=100.0)
@@ -126,7 +142,7 @@ class CPISeries(Base):
     replace_with: Mapped[str] = mapped_column(Text, nullable=False, default="")
 
     __table_args__ = (
-        UniqueConstraint("country", "series_name", "month", name="uq_cpi_series_country_series_month"),
+        UniqueConstraint("country", "series_name", "month", name="uq_price_series_country_series_month"),
     )
 
 

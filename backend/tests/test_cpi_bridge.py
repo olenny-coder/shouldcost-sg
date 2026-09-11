@@ -26,11 +26,11 @@ from app.benchmark import (
     compute_sensitivity,
     month_sort_key,
     quarter_months,
-    resolve_cpi_bridge,
+    resolve_index_bridge,
     resolve_tpi,
 )
 from app.countries import Country, get_country
-from app.models import BoQUpload, BoQItem, CPISeries
+from app.models import BoQUpload, BoQItem, PriceSeries
 
 SG_SAMPLE = "sample_boq.csv"
 IN_SAMPLE = "sample_boq_india.csv"
@@ -68,10 +68,10 @@ def _run(session, quarter=BRIDGED_QUARTER, series="BCA", filename=SG_SAMPLE, **k
 
 def _cpi_value(session, month: str, country: str = "SG", series_name: str = "CPI-ALL") -> float:
     return session.scalar(
-        select(CPISeries.value).where(
-            CPISeries.country == country,
-            CPISeries.month == month,
-            CPISeries.series_name == series_name,
+        select(PriceSeries.value).where(
+            PriceSeries.country == country,
+            PriceSeries.month == month,
+            PriceSeries.series_name == series_name,
         )
     )
 
@@ -84,7 +84,7 @@ def _mean(values) -> float:
 # The seed data is real
 # --------------------------------------------------------------------------- #
 def test_cpi_seed_is_real_published_data_with_provenance(session) -> None:
-    rows = list(session.scalars(select(CPISeries).where(CPISeries.country == "SG")))
+    rows = list(session.scalars(select(PriceSeries).where(PriceSeries.country == "SG")))
     assert rows, "the Singapore CPI series must be seeded"
     assert all(row.is_placeholder is False for row in rows)
     assert all(row.provenance_note for row in rows), "every real row states its provenance"
@@ -310,7 +310,7 @@ def test_unknown_preferred_series_falls_back_to_a_loaded_one(session, monkeypatc
         )
 
     monkeypatch.setattr(benchmark_module, "get_country", fake_get_country)
-    bridge = resolve_cpi_bridge(
+    bridge = resolve_index_bridge(
         session,
         country="SG",
         observation_quarter="2024Q4",
@@ -322,15 +322,15 @@ def test_unknown_preferred_series_falls_back_to_a_loaded_one(session, monkeypatc
 
 def test_no_cpi_data_at_all_degrades_to_a_warning_not_a_crash(session, monkeypatch) -> None:
     """With an empty CPI table the run must still complete, holding the index."""
-    monkeypatch.setattr(benchmark_module, "_cpi_rows", lambda *args, **kwargs: [])
-    bridge = resolve_cpi_bridge(
+    monkeypatch.setattr(benchmark_module, "_price_rows", lambda *args, **kwargs: [])
+    bridge = resolve_index_bridge(
         session,
         country="SG",
         observation_quarter="2024Q4",
         requested_quarter=BRIDGED_QUARTER,
     )
     assert bridge.applied is False
-    assert bridge.reason == "no_cpi_observations_loaded"
+    assert bridge.reason == "no_price_observations_loaded"
 
     result = _run(session)
     assert result.index_bridge["applied"] is False
@@ -447,7 +447,7 @@ def test_report_and_export_carry_the_bridge(session, client_module) -> None:
 # API surface
 # --------------------------------------------------------------------------- #
 def test_cpi_endpoint_serves_the_real_series(client_module) -> None:
-    response = client_module.get("/api/indices/cpi", params={"country": "SG"})
+    response = client_module.get("/api/indices/price-series", params={"country": "SG"})
     assert response.status_code == 200
     rows = response.json()
     assert len(rows) > 40
@@ -538,14 +538,16 @@ def test_countries_endpoint_publishes_the_cpi_series(client_module) -> None:
 # India: two publisher bases, no overlap, no chaining
 # --------------------------------------------------------------------------- #
 def test_india_cpi_seed_carries_the_current_base_and_its_predecessor(session) -> None:
-    rows = list(session.scalars(select(CPISeries).where(CPISeries.country == "IN")))
+    rows = list(session.scalars(select(PriceSeries).where(PriceSeries.country == "IN")))
     assert rows, "the India CPI series must be seeded"
     assert all(row.is_placeholder is False for row in rows)
     assert all(row.provenance_note for row in rows)
     by_series = {}
     for row in rows:
         by_series.setdefault(row.series_name, []).append(row)
-    assert set(by_series) == {"CPI-ALL", "CPI-ALL-2012"}
+    # India now carries real producer indices alongside the consumer series.
+    assert "CPI-ALL" in by_series
+    assert any(name.startswith("PPI-") for name in by_series)
 
     current = by_series["CPI-ALL"]
     older = by_series["CPI-ALL-2012"]
@@ -604,33 +606,38 @@ def test_india_bridge_spans_the_rebase_via_the_back_cast_months(session) -> None
     assert any(
         "BACK-CAST" in row.provenance_note
         for row in session.scalars(
-            select(CPISeries).where(
-                CPISeries.country == "IN",
-                CPISeries.series_name == "CPI-ALL",
-                CPISeries.month.in_(bridge.from_months),
+            select(PriceSeries).where(
+                PriceSeries.country == "IN",
+                PriceSeries.series_name == "CPI-ALL",
+                PriceSeries.month.in_(bridge.from_months),
             )
         )
     )
 
 
 def test_india_older_base_is_used_when_the_current_one_cannot_span(session, monkeypatch) -> None:
-    """Without the back-cast, the engine falls back to the older base - and says so.
+    """With no producer index available, the engine falls back to the older consumer base.
 
     This is the no-chaining rule in action: the 2012-based series can only reach
     2025-12, so a 2026Q3 request is carried as far as real data allows and the
     remaining gap is reported rather than invented.
+
+    Producer indices are excluded here so the test exercises the CPI fallback; the
+    PPI-first precedence is covered separately.
     """
-    real_rows = benchmark_module._cpi_rows
+    real_rows = benchmark_module._price_rows
 
     def rows_without_back_cast(session_, country, series_name=""):
-        rows = real_rows(session_, country)
+        # Producer indices are tried first, so remove them entirely: this test is
+        # about the CONSUMER fallback and the no-chaining rule, not the precedence.
+        rows = [r for r in real_rows(session_, country) if r.kind != "PPI"]
         return [
             row
             for row in rows
             if not (row.country == "IN" and row.series_name == "CPI-ALL" and row.month < "2026-01")
         ]
 
-    monkeypatch.setattr(benchmark_module, "_cpi_rows", rows_without_back_cast)
+    monkeypatch.setattr(benchmark_module, "_price_rows", rows_without_back_cast)
     tpi = resolve_tpi(session, "CPWD", BRIDGED_QUARTER, country="IN")
     bridge = tpi.bridge
     assert bridge.applied is True
@@ -650,7 +657,8 @@ def test_freshness_endpoint_lists_every_cpi_series(client_module) -> None:
         "/api/indices/freshness", params={"country": "IN", "reference_quarter": "2026Q3"}
     ).json()
     names = {row["series_name"] for row in payload["cpi_series_list"]}
-    assert names == {"CPI-ALL", "CPI-ALL-2012"}
+    assert "CPI-ALL" in names
+    assert any(name.startswith("PPI-") for name in names)
     preferred = [row for row in payload["cpi_series_list"] if row["is_preferred"]]
     assert len(preferred) == 1
     assert preferred[0]["base_year"] == 2024

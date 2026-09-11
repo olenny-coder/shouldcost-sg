@@ -41,7 +41,7 @@ import pandas as pd
 from .db import get_session_factory, init_db
 from .etl import (
     load_benchmark_rates,
-    load_cpi,
+    load_price_series,
     load_materials,
     load_regional_factors,
     load_tpi,
@@ -53,7 +53,7 @@ KINDS = {
     "materials": load_materials,
     "benchmark_rates": load_benchmark_rates,
     "regions": load_regional_factors,
-    "cpi": load_cpi,
+    "price_series": load_price_series,
 }
 
 

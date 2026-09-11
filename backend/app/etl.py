@@ -31,7 +31,7 @@ from .models import (
     BenchmarkRate,
     BoQUpload,
     BoQItem,
-    CPISeries,
+    PriceSeries,
     MaterialPrice,
     RegionalFactor,
     TPISeries,
@@ -43,7 +43,7 @@ TPI_CSV = "tpi_series.csv"
 MATERIAL_CSV = "material_prices.csv"
 BENCHMARK_CSV = "benchmark_rates.csv"
 REGIONAL_CSV = "regional_factors.csv"
-CPI_CSV = "cpi_series.csv"
+PRICE_CSV = "price_series.csv"
 
 # One demonstration upload per supported country. Each file is replaced (never
 # appended), so re-running the ETL cannot accumulate uploads.
@@ -114,11 +114,12 @@ def load_tpi(session: Session, df: pd.DataFrame) -> int:
     return inserted
 
 
-def load_cpi(session: Session, df: pd.DataFrame) -> int:
-    """Load monthly consumer price index observations.
+def load_price_series(session: Session, df: pd.DataFrame) -> int:
+    """Load monthly producer and consumer price index observations.
 
-    These are the most timely official price series available, and the engine uses
-    them to carry a stale index observation forward to the tender quarter.
+    These are the most timely official series available, and the engine uses them
+    to carry a stale construction index observation forward to the tender quarter.
+    Producer indices take precedence over consumer ones - see PriceSeries.
     """
     inserted = 0
     for row in df.to_dict("records"):
@@ -128,7 +129,15 @@ def load_cpi(session: Session, df: pd.DataFrame) -> int:
             "series_name": row["series_name"].strip().upper(),
             "month": row["month"].strip(),
         }
+        kind = (row.get("kind") or "CPI").strip().upper()
+        if kind not in {"PPI", "CPI"}:
+            raise ValueError(
+                f"{key['series_name']} {key['month']}: kind must be PPI or CPI, got {kind!r}."
+            )
         values = {
+            "kind": kind,
+            "title": row.get("title", "").strip(),
+            "scope_sections": row.get("scope_sections", "").strip(),
             "base_year": int(row["base_year"]),
             "base_value": _as_float(row.get("base_value") or 100.0),
             "currency": (row.get("currency") or get_country(country).currency).strip().upper(),
@@ -138,7 +147,7 @@ def load_cpi(session: Session, df: pd.DataFrame) -> int:
             "provenance_note": row.get("provenance_note", "").strip(),
             "replace_with": row.get("replace_with", "").strip(),
         }
-        inserted += _upsert(session, CPISeries, key, values)
+        inserted += _upsert(session, PriceSeries, key, values)
     return inserted
 
 
@@ -326,7 +335,7 @@ def run_etl(data_dir: Path | None = None, *, session: Session | None = None) -> 
             "material_prices": load_materials(session, _read_csv(MATERIAL_CSV, directory)),
             "benchmark_rates": load_benchmark_rates(session, _read_csv(BENCHMARK_CSV, directory)),
             "regional_factors": load_regional_factors(session, _read_csv(REGIONAL_CSV, directory)),
-            "cpi_series": load_cpi(session, _read_csv(CPI_CSV, directory)),
+            "price_series": load_price_series(session, _read_csv(PRICE_CSV, directory)),
         }
         sample_items = 0
         for filename, country_code in SAMPLE_BOQS:
@@ -351,7 +360,7 @@ def row_counts(session: Session) -> dict[str, int]:
         "material_prices": session.scalar(select(func.count()).select_from(MaterialPrice)) or 0,
         "benchmark_rates": session.scalar(select(func.count()).select_from(BenchmarkRate)) or 0,
         "regional_factors": session.scalar(select(func.count()).select_from(RegionalFactor)) or 0,
-        "cpi_series": session.scalar(select(func.count()).select_from(CPISeries)) or 0,
+        "price_series": session.scalar(select(func.count()).select_from(PriceSeries)) or 0,
         "boq_uploads": session.scalar(select(func.count()).select_from(BoQUpload)) or 0,
         "boq_items": session.scalar(select(func.count()).select_from(BoQItem)) or 0,
     }
@@ -365,7 +374,7 @@ def real_data_summary(session: Session) -> dict[str, int]:
         ("material_prices", MaterialPrice),
         ("benchmark_rates", BenchmarkRate),
         ("regional_factors", RegionalFactor),
-        ("cpi_series", CPISeries),
+        ("price_series", PriceSeries),
     ):
         total = session.scalar(select(func.count()).select_from(model)) or 0
         real = (
@@ -398,7 +407,7 @@ def main(argv: list[str] | None = None) -> int:
     result = run_etl(args.data_dir)
     inserted = result["inserted"]
     print("ETL: rows inserted this run (0 means the CSV was already applied)")
-    for table in ("tpi_series", "material_prices", "benchmark_rates", "regional_factors", "cpi_series"):
+    for table in ("tpi_series", "material_prices", "benchmark_rates", "regional_factors", "price_series"):
         print(f"  {table:<18} {inserted[table]}")
     print(f"  {'boq_items':<18} {inserted['boq_items']} (sample uploads are rewritten each run)")
     print("ETL: row counts after load")
@@ -411,7 +420,7 @@ def main(argv: list[str] | None = None) -> int:
     finally:
         session.close()
     print("ETL: real published data vs synthetic placeholder")
-    for table in ("tpi_series", "material_prices", "benchmark_rates", "regional_factors", "cpi_series"):
+    for table in ("tpi_series", "material_prices", "benchmark_rates", "regional_factors", "price_series"):
         real = summary[table]
         total = summary[table + "_total"]
         flag = "REAL" if real == total else ("placeholder" if real == 0 else "MIXED")
