@@ -1,0 +1,71 @@
+# yaml-language-server: $schema=https://render.com/schema/render.yaml.json
+# ---------------------------------------------------------------------------
+# Render Blueprint for shouldcost-sg (FastAPI backend + managed PostgreSQL).
+#
+# Apply with: Render Dashboard -> New -> Blueprint -> pick this repo.
+# Render detects render.yaml at the repo root and provisions everything below.
+#
+# NO SECRETS ARE COMMITTED. Every credential is either injected by Render
+# (DATABASE_URL) or left as `sync: false`, which makes Render prompt for the
+# value in the dashboard instead of reading it from this file.
+#
+# Two deliberate spelling choices, both verified against
+# https://render.com/docs/blueprint-spec:
+#   1. `runtime: python` - Render documents `runtime` as the current field and
+#      states it replaces the deprecated `env` field. `env: python` still parses
+#      but is legacy, so the current spelling is used here.
+#   2. `PYTHON_VERSION` must be a FULLY QUALIFIED version. Render docs:
+#      "You must specify a fully qualified version (e.g., 3.13.5) if you use
+#      this method." A bare "3.11" is silently ignored and the service would
+#      build on Render's default Python instead. 3.11.6 is the version this
+#      project is developed and tested against.
+# ---------------------------------------------------------------------------
+
+databases:
+  - name: shouldcost-db
+    databaseName: shouldcost
+    user: shouldcost
+    # `free` = 0.1 CPU / 256 MB. Verified still present in the Render plan table.
+    # The equivalent current plan id is `0.1c-256mb`; `basic-256mb` is a legacy
+    # instance type. Free PostgreSQL instances are deleted after 30 days - see
+    # deploy-runbook.md step 12.
+    plan: free
+    postgresMajorVersion: "16"
+    region: singapore
+
+services:
+  - type: web
+    name: shouldcost-backend
+    runtime: python
+    rootDir: backend
+    plan: free
+    region: singapore
+    branch: main
+    autoDeployTrigger: commit
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn app.main:app --host 0.0.0.0 --port $PORT
+    healthCheckPath: /api/healthz
+    # preDeployCommand is intentionally NOT enabled here: it is only available on
+    # paid instance types. Seed the database with a one-off job instead - see
+    # deploy-runbook.md step 5. The ETL is idempotent, so re-running is safe.
+    # preDeployCommand: python -m app.etl
+    envVars:
+      # Injected by Render from the managed database above. Never hardcoded.
+      - key: DATABASE_URL
+        fromDatabase:
+          name: shouldcost-db
+          property: connectionString
+      - key: ENVIRONMENT
+        value: production
+      - key: PYTHON_VERSION
+        value: "3.11.6"
+      - key: PYTHONUNBUFFERED
+        value: "1"
+      # Set in the Render dashboard AFTER the Vercel deploy exists. CORS uses an
+      # explicit allowlist built from this value; a wildcard is never used.
+      - key: FRONTEND_URL
+        sync: false
+      # Optional. Regex for Vercel preview deploys, e.g.
+      # ^https://shouldcost-.*\.vercel\.app$  Leave unset to deny preview origins.
+      - key: FRONTEND_PREVIEW_REGEX
+        sync: false
