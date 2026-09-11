@@ -7,7 +7,7 @@ BACKEND := backend
 FRONTEND := frontend
 
 .PHONY: help install install-backend install-frontend seed cpi-seed price-series-seed \
-        verify-seed test test-backend build dev dev-backend dev-frontend clean reset-db
+        verify-seed upgrade-check test test-backend build dev dev-backend dev-frontend clean reset-db
 
 help:
 	@echo "shouldcost-sg - available targets"
@@ -16,6 +16,7 @@ help:
 	@echo "  make cpi-seed  Rebuild data/cpi_series.csv from the publisher downloads (.realdata/)"
 	@echo "  make price-series-seed  Rebuild data/price_series.csv (CPI + 16 India PPI baskets)"
 	@echo "  make verify-seed        Re-derive every seeded value from the publisher file"
+	@echo "  make upgrade-check      ETL against a copy of a database with the old schema"
 	@echo "  make test      Run the backend test suite"
 	@echo "  make build     Production build of the frontend"
 	@echo "  make dev-backend   Run FastAPI on http://localhost:8000"
@@ -48,6 +49,12 @@ price-series-seed:
 # what is committed. Exits non-zero if anything has drifted.
 verify-seed:
 	$(PY) tools/verify_seed_data.py
+
+# Simulate a deployed database whose schema predates the newest seed table, then run
+# the ETL against the copy. Guards the deploy failure mode where the code is current
+# but the database is stale. `make upgrade-check`
+upgrade-check:
+	$(PY) tools/check_upgrade_path.py
 
 test: test-backend
 

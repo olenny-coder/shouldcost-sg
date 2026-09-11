@@ -175,6 +175,33 @@ To seed deliberately instead, set ```AUTO_SEED=false``` and use one of these:
    through the deployed API. Pass ```-ApiBase https://<your-service>.onrender.com```
    to point it at a different service.
 
+#### When the code is newer than the database
+
+```AUTO_SEED``` only fires on an **empty** database, so it will not refresh one that already has
+data. After a release that adds seed rows - a new index series, a new market - the deployed database
+is stale even though the code is current, and the symptom is an API that answers 200 with an empty
+list, or a panel that reports no data for a feature the UI clearly has.
+
+Redeploying the service does **not** fix that. Run the ETL against the deployed database:
+
+```powershell
+.\tools\seed_remote.ps1
+```
+
+It is idempotent and upserts on natural keys, so it is safe to run against a live database: existing
+rows are updated, new rows are inserted, and **uploaded BoQs are left alone**.
+
+Adding a brand-new *table* needs no reset - ```create_all()``` creates it and the ETL fills it. Only a
+change to an **existing** table's **columns** needs ```--reset```, which drops everything including
+uploaded BoQs. To confirm which case you are in before deploying, run the upgrade check locally:
+
+```bash
+python tools/check_upgrade_path.py
+```
+
+It copies your local SQLite database, drops the newest table to simulate the deployed schema, re-runs
+the ETL against the copy, and asserts the table is recreated and filled while uploaded BoQs survive.
+
 > **Do not run ```python -m app.etl``` in a plain shell without setting ```DATABASE_URL```.**
 > With no ```DATABASE_URL``` the app falls back to local SQLite, so the command succeeds, prints
 > correct-looking row counts, and writes to ```backend/shouldcost.db``` on your machine. Production
