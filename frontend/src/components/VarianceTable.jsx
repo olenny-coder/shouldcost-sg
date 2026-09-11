@@ -25,6 +25,9 @@ function flagSummary(line) {
     no_benchmark_rate: 'no benchmark rate',
     placeholder_benchmark_rate: 'placeholder rate',
     tpi_quarter_fallback: 'TPI quarter fallback',
+    cpi_bridged: 'CPI-bridged index',
+    overhead_applied: 'overheads added',
+    margin_applied: 'margin added',
     reclassified_manually: 'reclassified',
     user_adjusted: 'index adjusted',
   }
@@ -42,6 +45,9 @@ export default function VarianceTable(props) {
   const currency = props.currency || result.currency || 'SGD'
   // Currency-bound alias, so every money(...) call site below stays unchanged.
   const money = function (value) { return moneyFmt(value, currency) }
+  // Overheads and margin, when the analyst has supplied them, add a full-cost line
+  // to every subtotal and to the footer.
+  const ohpActive = !!(result.totals.overhead_pct || result.totals.margin_pct)
 
   const sorted = useMemo(function () {
     const copy = lines.slice()
@@ -176,7 +182,11 @@ export default function VarianceTable(props) {
                   <p className="muted small">
                     {line.exclusion_reason
                       ? 'Excluded from variance testing: ' + line.exclusion_reason + '. Should-cost is held at the tendered rate, so this line contributes zero tested variance.'
-                      : 'Derived: base_rate x (current TPI / base TPI) x scope_factor.'}
+                      : line.overhead_pct || line.margin_pct
+                        ? 'Modelled: the benchmark rate is grossed up by the analyst\'s overheads and margin, which are commercial inputs rather than observations, so this line is assumed rather than derived. Formula: base_rate x (index used / base index) x scope_factor, then x (1 + overheads%) x (1 + margin%).'
+                        : line.tpi_bridged
+                          ? 'Modelled: the index for the tender quarter is not a published observation - it was bridged with the consumer price index, so this line is assumed rather than derived. Formula: base_rate x (index used / base index) x scope_factor.'
+                          : 'Derived: base_rate x (current TPI / base TPI) x scope_factor.'}
                   </p>
                 </div>
                 <div>
@@ -190,6 +200,44 @@ export default function VarianceTable(props) {
                     <br />
                     scope_factor {num(line.scope_factor, 6)}{line.scope_excluded ? ' (section excluded by this series)' : ''}
                   </p>
+                  {line.tpi_bridged ? (
+                    <p className="small bridge-line">
+                      <strong>Index bridged with the CPI.</strong> Published observation{' '}
+                      {num(line.tpi_value_published, 2)} at {line.tpi_quarter_used}
+                      {' '}({line.index_lag_quarters} quarter(s) stale). Carried forward to{' '}
+                      {line.cpi_month_used} with {line.cpi_series_name}
+                      {line.cpi_value_used !== null && line.cpi_value_used !== undefined
+                        ? ' = ' + num(line.cpi_value_used, 3) : ''}
+                      , a factor of {num(line.cpi_bridge_factor, 4)}. This is a modelled step, not a
+                      published construction cost observation, so the line is{' '}
+                      <strong>basis: assumed</strong>.
+                      {line.cpi_source_url ? (
+                        <span>
+                          {' '}Source:{' '}
+                          <a href={line.cpi_source_url} target="_blank" rel="noreferrer">
+                            {line.cpi_source_url}
+                          </a>
+                        </span>
+                      ) : null}
+                    </p>
+                  ) : null}
+                  {line.overhead_pct || line.margin_pct ? (
+                    <p className="small ohp-readout">
+                      <strong>
+                        Full cost: overheads {num(line.overhead_pct, 1)}% and margin{' '}
+                        {num(line.margin_pct, 1)}%.
+                      </strong>{' '}
+                      Benchmark rate {money(line.adjusted_benchmark_rate)} becomes{' '}
+                      <strong>{money(line.full_adjusted_benchmark_rate)}</strong> per{' '}
+                      {line.unit} (margin compounded on overheads). On this line that adds{' '}
+                      {money(line.overhead_amount)} of overheads and {money(line.margin_amount)} of
+                      margin, for a full should-cost of{' '}
+                      <strong>{money(line.full_should_cost_amount)}</strong>.
+                      {line.compared_against_full
+                        ? ' The variance above is measured full-to-full against that rate.'
+                        : ' The variance above is measured against the benchmark rate before overheads.'}
+                    </p>
+                  ) : null}
                 </div>
                 {line.provenance && (
                   <div>
@@ -247,7 +295,14 @@ export default function VarianceTable(props) {
         <td className="num">{(section.basis || '').toUpperCase()}</td>
         <td className={section.breaches_threshold ? 'num danger' : 'num'}>{pct(section.variance_pct)}</td>
         <td className="num">{money(section.variance_amount)}</td>
-        <td className="num">{money(section.should_cost_amount)}</td>
+        <td className="num">
+          {ohpActive && section.full_should_cost_amount
+            ? <span>
+                {money(section.should_cost_amount)}
+                <div className="small muted">full {money(section.full_should_cost_amount)}</div>
+              </span>
+            : money(section.should_cost_amount)}
+        </td>
       </tr>
     )
   }
@@ -265,6 +320,7 @@ export default function VarianceTable(props) {
             'Click any description to expand that line\'s full working: the rate used, the index applied, the scope factor, and the source and date of the benchmark rate.',
             'A grey section dropdown means the classifier could not place the line. Pick the right section and the benchmark re-runs immediately.',
             'Each section ends with a subtotal row showing the section\'s variance and its basis.',
+            'If you have set overheads and margin on the adjusters panel, every line also carries a full cost: benchmark rate x (1 + overheads%) x (1 + margin%), and the table footer adds a full should-cost row. Those percentages are assumptions, so the lines they touch are grey-amber, not derived.',
             'The footer reconciles the whole BoQ. If a line is not benchmarked it carries zero tested variance - that is why the coverage panel matters.',
           ]}
           footnote="Measured means taken from the BoQ or a publication; derived means calculated from those; assumed means apportioned or analyst-supplied."
@@ -325,6 +381,23 @@ export default function VarianceTable(props) {
               <td className="num">{money(result.totals.total_variance_abs)}</td>
               <td className="num">{money(result.totals.should_cost_total)}</td>
             </tr>
+            {ohpActive ? (
+              <tr className="total-row">
+                <td colSpan={5}>
+                  Full should-cost - benchmark {money(result.totals.should_cost_total)}
+                  {' + '}{money(result.totals.overhead_amount_total)} overheads (
+                  {num(result.totals.overhead_pct, 1)}%)
+                  {' + '}{money(result.totals.margin_amount_total)} margin (
+                  {num(result.totals.margin_pct, 1)}%)
+                </td>
+                <td className="num">
+                  <span className="badge basis-assumed">OH&amp;P</span>
+                </td>
+                <td className="num">{pct(result.totals.full_variance_pct)}</td>
+                <td className="num">{money(result.totals.full_variance_abs)}</td>
+                <td className="num">{money(result.totals.full_should_cost_total)}</td>
+              </tr>
+            ) : null}
           </tfoot>
         </table>
       </div>

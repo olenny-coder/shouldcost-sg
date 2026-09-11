@@ -94,6 +94,42 @@ class MaterialPrice(Base):
     )
 
 
+class CPISeries(Base):
+    """Monthly consumer price index observation.
+
+    Published TPI / WPI series lag the tender quarter: the BCA series is a
+    quarterly release, and the WPI for a month appears about two months after the
+    month ends. The CPI for the same country is published monthly and is
+    therefore the most timely official price indicator available.
+
+    When the requested tender quarter is later than the last observation of the
+    selected index series, the engine carries that last observation forward by
+    the observed CPI movement between the two quarters. That bridge is a MODELLED
+    step, not an observation of construction cost, so it is disclosed as an
+    assumption on every affected line. See README "Keeping the indexes current".
+    """
+
+    __tablename__ = "cpi_series"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    country: Mapped[str] = mapped_column(String(2), nullable=False, index=True, default="SG")
+    # e.g. CPI-ALL - the all-items series. The bridge uses one series per country.
+    series_name: Mapped[str] = mapped_column(String(16), nullable=False, index=True)
+    month: Mapped[str] = mapped_column(String(7), nullable=False, index=True)
+    base_year: Mapped[int] = mapped_column(Integer, nullable=False, default=2024)
+    base_value: Mapped[float] = mapped_column(Float, nullable=False, default=100.0)
+    currency: Mapped[str] = mapped_column(String(3), nullable=False, default="SGD")
+    value: Mapped[float] = mapped_column(Float, nullable=False)
+    source_url: Mapped[str] = mapped_column(String(512), nullable=False)
+    is_placeholder: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    provenance_note: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    replace_with: Mapped[str] = mapped_column(Text, nullable=False, default="")
+
+    __table_args__ = (
+        UniqueConstraint("country", "series_name", "month", name="uq_cpi_series_country_series_month"),
+    )
+
+
 class BenchmarkRate(Base):
     """SMM2-section benchmark rate at a stated base year."""
 

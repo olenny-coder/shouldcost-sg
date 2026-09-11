@@ -6,13 +6,14 @@ PY ?= python
 BACKEND := backend
 FRONTEND := frontend
 
-.PHONY: help install install-backend install-frontend seed test test-backend build \
+.PHONY: help install install-backend install-frontend seed cpi-seed test test-backend build \
         dev dev-backend dev-frontend clean reset-db
 
 help:
 	@echo "shouldcost-sg - available targets"
 	@echo "  make install   Install backend (pip) and frontend (npm) dependencies"
 	@echo "  make seed      Load the bundled CSV seed data (idempotent)"
+	@echo "  make cpi-seed  Rebuild data/cpi_series.csv from the publisher downloads (.realdata/)"
 	@echo "  make test      Run the backend test suite"
 	@echo "  make build     Production build of the frontend"
 	@echo "  make dev-backend   Run FastAPI on http://localhost:8000"
@@ -29,6 +30,11 @@ install-frontend:
 
 seed:
 	cd $(BACKEND) && $(PY) -m app.etl
+
+# Rebuild the real monthly CPI seed from the files downloaded into ../.realdata/
+# (SingStat table M213751 and the MoSPI CPI release). Then `make seed` upserts it.
+cpi-seed:
+	$(PY) tools/build_cpi_seed.py
 
 test: test-backend
 

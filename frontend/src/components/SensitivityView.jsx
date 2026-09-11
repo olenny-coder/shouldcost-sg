@@ -49,6 +49,7 @@ export default function SensitivityView(props) {
             'The break-even tile states that crossing as a percentage shift and as an index value - the answer to "how much would prices have to move before this tender is fair?"',
             'The tornado chart moves one section\'s rate at a time by the stress percentage. The longest bars are the sections that actually drive your answer, and where to spend your checking effort.',
             'The sweep table adds the count of over- and under-priced lines at each index level, so you can see when a tolerance stops holding.',
+            'The centre of the sweep is the index level actually used. If the index series has not published the tender quarter yet, that level is the last published observation bridged with the consumer price index - the banner below says so, and the sweep moves around the bridged level.',
             'Every point is a scenario you chose, not a forecast. Nothing here is a prediction of what prices will do.',
           ]}
           footnote="Set index to break-even on the adjusters panel to carry the break-even level into the variance table."
@@ -59,6 +60,20 @@ export default function SensitivityView(props) {
         moves one section's rate at a time. Every point comes from the same engine as the headline
         benchmark, so the centre of the sweep equals the variance table to the cent.
       </p>
+
+      {data && data.index_bridge && data.index_bridge.applied ? (
+        <div className="notice notice-info">
+          <strong>This sweep runs on a bridged index.</strong> The{' '}
+          {data.index_bridge.index_series} series last published{' '}
+          {data.index_bridge.observation_quarter}; the centre of the sweep is that value carried
+          forward to {data.index_bridge.bridged_through_month} with{' '}
+          {data.index_bridge.cpi_series_name} (factor{' '}
+          {Number(data.index_bridge.cpi_bridge_factor).toFixed(4)}), giving{' '}
+          {Number(data.baseline_tpi_value).toFixed(2)} from a published{' '}
+          {Number(data.baseline_tpi_value_published).toFixed(2)}. The bridged part of the level is a
+          modelled assumption, so treat the whole sweep as resting on it.
+        </div>
+      ) : null}
 
       <div className="control-row" style={{ marginTop: 12 }}>
         <label>Index from (%)

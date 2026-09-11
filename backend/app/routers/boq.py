@@ -427,6 +427,7 @@ def _benchmark_for_export(db: Session, upload: BoQUpload, items: list[BoQItem], 
             region_code=_upload_region(db, upload, getattr(request, "region_code", None)),
             adjustments=request.adjustments,
             manual_rates=getattr(request, "manual_rates", None),
+            index_bridge=getattr(request, "index_bridge", "cpi"),
         )
     except RegionLookupError as exc:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
@@ -478,11 +479,88 @@ def _report_rows(computation, items: list[BoQItem]) -> list[dict]:
     add("report", "index_scope_inclusions", "Index scope inclusions", computation.tpi_series_scope_inclusions)
     add("report", "index_scope_exclusions", "Index scope exclusions", computation.tpi_series_scope_exclusions)
     add("report", "variance_threshold_pct", "Breach threshold", computation.variance_threshold)
+    # ---- overheads and margin: the inputs that turn the benchmark cost into a ----
+    # ---- full should-cost, and the full cost itself ----------------------------
+    totals = computation.totals or {}
+    add(
+        "report",
+        "overhead_pct",
+        "Overheads added to the benchmark cost (analyst input)",
+        totals.get("overhead_pct", 0.0),
+        "assumed",
+    )
+    add(
+        "report",
+        "margin_pct",
+        "Profit margin added after overheads (analyst input)",
+        totals.get("margin_pct", 0.0),
+        "assumed",
+    )
+    add(
+        "report",
+        "overheads_in_tender",
+        "Tendered rates are taken to already include overheads and profit",
+        totals.get("overheads_in_tender", True),
+        "assumed",
+    )
+    add(
+        "report",
+        "full_should_cost_total",
+        "FULL should-cost: benchmark cost grossed up by overheads and margin, plus "
+        "unbenchmarked lines at the tendered rate",
+        totals.get("full_should_cost_total"),
+        "assumed" if (totals.get("overhead_pct") or totals.get("margin_pct")) else "derived",
+    )
+    add("report", "full_should_cost_formula",
+        "Full cost formula",
+        "full_rate = adjusted_benchmark_rate x (1 + overhead_pct/100) x (1 + margin_pct/100)")
     if computation.lines:
         line = computation.lines[0]
         add("report", "index_quarter_used", "Index quarter actually used", line.tpi_quarter_used)
         add("report", "index_value_used", "Index value used", line.tpi_value)
         add("report", "index_value_published", "Index value as published", line.tpi_value_published)
+    # ---- index freshness / CPI bridge -------------------------------------------
+    freshness = computation.index_bridge or {}
+    add(
+        "report",
+        "index_bridge_applied",
+        "Index value for the tender quarter was bridged with the CPI (modelled, not observed)",
+        bool(freshness.get("applied")),
+        "assumed" if freshness.get("applied") else "derived",
+    )
+    if freshness:
+        add("report", "index_observation_quarter", "Last published quarter of the index series",
+            freshness.get("observation_quarter"), "measured")
+        add("report", "index_lag_quarters", "Quarters between the last observation and the tender quarter",
+            freshness.get("lag_quarters"), "measured")
+        add("report", "index_bridge_formula",
+            "Bridge formula",
+            "index_value(tender) = index_value(last_observed_quarter) * cpi(covered_through) / cpi(last_observed_quarter)")
+        if freshness.get("applied"):
+            add("report", "cpi_series", "Consumer price series used for the bridge",
+                freshness.get("cpi_series_name"), "measured")
+            add("report", "cpi_months_from", "CPI months at the index observation quarter",
+                "|".join(freshness.get("cpi_from_months") or []), "measured")
+            add("report", "cpi_value_from", "CPI mean over those months",
+                freshness.get("cpi_from_value"), "measured")
+            add("report", "cpi_months_to", "CPI months used at the bridge target",
+                "|".join(freshness.get("cpi_to_months") or []), "measured")
+            add("report", "cpi_value_to", "CPI mean over those months",
+                freshness.get("cpi_to_value"), "measured")
+            add("report", "cpi_bridge_factor", "CPI bridge factor applied to the index",
+                freshness.get("cpi_bridge_factor"), "assumed")
+            add("report", "index_bridged_through", "Index is current to this month after bridging",
+                freshness.get("bridged_through_month"), "assumed")
+            add("report", "index_bridge_shortfall_months",
+                "Months between the bridged-through month and the end of the tender quarter",
+                freshness.get("shortfall_months"), "assumed")
+            add("report", "cpi_source_url", "Source of the CPI series",
+                freshness.get("cpi_source_url"), "measured")
+            add("report", "cpi_provenance_note", "CPI provenance",
+                freshness.get("cpi_provenance_note"), "measured")
+        else:
+            add("report", "index_bridge_reason", "Why the bridge was not applied",
+                freshness.get("reason"), "derived")
     add("report", "formula", "Formula contract", "adjusted_benchmark_rate = base_rate * (index_used / index_base) * scope_factor")
 
     # ---- totals -----------------------------------------------------------------
@@ -509,7 +587,12 @@ def _report_rows(computation, items: list[BoQItem]) -> list[dict]:
         for key in ("raw_description", "unit", "quantity", "boq_rate", "boq_amount",
                     "smm2_section", "benchmark_base_rate", "adjusted_benchmark_rate",
                     "variance_abs", "variance_pct", "should_cost_amount", "variance_amount",
-                    "scope_factor", "regional_factor", "rate_scale_pct", "exclusion_reason"):
+                    "scope_factor", "regional_factor", "rate_scale_pct", "exclusion_reason",
+                    "tpi_quarter_used", "tpi_value", "tpi_value_published", "tpi_bridged",
+                    "cpi_bridge_factor", "cpi_series_name", "cpi_month_used", "cpi_value_used",
+                    "index_lag_quarters", "full_adjusted_benchmark_rate", "overhead_pct",
+                    "margin_pct", "overhead_amount", "margin_amount", "full_should_cost_amount",
+                    "compared_against_full"):
             add("line", line.item_id, key, getattr(line, key), line.basis)
         add("line", line.item_id, "flags", "|".join(line.flags), line.basis)
         if line.provenance:
@@ -526,6 +609,11 @@ def _report_rows(computation, items: list[BoQItem]) -> list[dict]:
     add("adjustment", "regional_factor", "regional_factor", computation.regional_factor, "assumed")
     add("adjustment", "tpi_scale_pct", "Published index shifted by this percent", adjustments.get("tpi_scale_pct"), "assumed")
     add("adjustment", "tpi_value_override", "Absolute index override", adjustments.get("tpi_value_override"), "assumed")
+    add("adjustment", "overhead_pct", "Overheads added to the benchmark cost", adjustments.get("overhead_pct"), "assumed")
+    add("adjustment", "margin_pct", "Margin added after overheads", adjustments.get("margin_pct"), "assumed")
+    add("adjustment", "overhead_amount_total", "Total overheads added", totals.get("overhead_amount_total"), "assumed")
+    add("adjustment", "margin_amount_total", "Total margin added", totals.get("margin_amount_total"), "assumed")
+    add("adjustment", "full_should_cost_total", "Should-cost including overheads and margin", totals.get("full_should_cost_total"), "assumed")
     add("adjustment", "base_rate_scale_pct", "Every benchmark rate shifted by this percent", adjustments.get("base_rate_scale_pct"), "assumed")
     for section, pct in sorted((adjustments.get("section_rate_scale_pct") or {}).items()):
         add("adjustment", f"section:{section}", "Section rate shift percent", pct, "assumed")
@@ -550,6 +638,9 @@ def _export_rows(level: str, computation, items: list[BoQItem]) -> list[dict]:
         return [dict(section) for section in computation.sections]
 
     if level == "waterfall":
+        full_total = computation.totals.get(
+            "full_should_cost_total", computation.totals["should_cost_total"]
+        )
         rows = [
             {
                 "component": "boq_total",
@@ -563,10 +654,13 @@ def _export_rows(level: str, computation, items: list[BoQItem]) -> list[dict]:
         rows.append(
             {
                 "component": "should_cost_total",
-                "amount": computation.totals["should_cost_total"],
+                "amount": full_total,
                 "basis": "derived",
-                "method": "sum(quantity x adjusted_benchmark_rate)",
-                "justification": "Benchmark-derived should-cost for the same scope.",
+                "method": "sum(quantity x full_adjusted_benchmark_rate)",
+                "justification": (
+                    "Full benchmark-derived should-cost for the same scope, including any "
+                    "overheads and margin the analyst supplied."
+                ),
             }
         )
         return rows
@@ -586,6 +680,24 @@ def _export_rows(level: str, computation, items: list[BoQItem]) -> list[dict]:
                 {"key": "tpi_scale_pct", "value": adjustments.get("tpi_scale_pct")},
                 {"key": "base_rate_scale_pct", "value": adjustments.get("base_rate_scale_pct")},
                 {"key": "tpi_value_override", "value": adjustments.get("tpi_value_override")},
+                {"key": "index_bridge_applied",
+                 "value": bool((computation.index_bridge or {}).get("applied"))},
+                {"key": "index_observation_quarter",
+                 "value": (computation.index_bridge or {}).get("observation_quarter")},
+                {"key": "index_lag_quarters",
+                 "value": (computation.index_bridge or {}).get("lag_quarters")},
+                {"key": "cpi_bridge_factor",
+                 "value": (computation.index_bridge or {}).get("cpi_bridge_factor")},
+                {"key": "index_bridged_through_month",
+                 "value": (computation.index_bridge or {}).get("bridged_through_month")},
+                {"key": "overhead_pct", "value": totals.get("overhead_pct", 0.0)},
+                {"key": "margin_pct", "value": totals.get("margin_pct", 0.0)},
+                {"key": "overheads_in_tender", "value": totals.get("overheads_in_tender", True)},
+                {"key": "overhead_amount_total", "value": totals.get("overhead_amount_total", 0.0)},
+                {"key": "margin_amount_total", "value": totals.get("margin_amount_total", 0.0)},
+                {"key": "full_should_cost_total", "value": totals.get("full_should_cost_total")},
+                {"key": "full_variance_abs", "value": totals.get("full_variance_abs")},
+                {"key": "full_variance_pct", "value": totals.get("full_variance_pct")},
             ]
         )
         for index, warning in enumerate(computation.warnings, start=1):
@@ -621,6 +733,20 @@ def _export_rows(level: str, computation, items: list[BoQItem]) -> list[dict]:
                     "should_cost_amount": line.should_cost_amount,
                     "variance_amount": line.variance_amount,
                     "tpi_ratio": line.tpi_ratio,
+                    "tpi_quarter_used": line.tpi_quarter_used,
+                    "tpi_value": line.tpi_value,
+                    "tpi_value_published": line.tpi_value_published,
+                    "tpi_bridged": line.tpi_bridged,
+                    "cpi_bridge_factor": line.cpi_bridge_factor,
+                    "cpi_series_name": line.cpi_series_name,
+                    "cpi_month_used": line.cpi_month_used,
+                    "index_lag_quarters": line.index_lag_quarters,
+                    "full_adjusted_benchmark_rate": line.full_adjusted_benchmark_rate,
+                    "overhead_pct": line.overhead_pct,
+                    "margin_pct": line.margin_pct,
+                    "overhead_amount": line.overhead_amount,
+                    "margin_amount": line.margin_amount,
+                    "full_should_cost_amount": line.full_should_cost_amount,
                     "scope_factor": line.scope_factor,
                     "rate_scale_pct": line.rate_scale_pct,
                     "basis": line.basis,

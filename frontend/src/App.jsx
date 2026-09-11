@@ -9,6 +9,7 @@ import WaterfallChart from './components/WaterfallChart.jsx'
 import SensitivityView from './components/SensitivityView.jsx'
 import IndexDashboard from './components/IndexDashboard.jsx'
 import AssumptionsPanel from './components/AssumptionsPanel.jsx'
+import ClassificationRules from './components/ClassificationRules.jsx'
 import ExportBar from './components/ExportBar.jsx'
 import CoveragePanel from './components/CoveragePanel.jsx'
 
@@ -33,6 +34,37 @@ const NO_ADJUSTMENTS = {
   base_rate_scale_pct: 0,
   tpi_value_override: null,
   section_rate_scale_pct: {},
+  // Overheads and margin: the analyst inputs that turn the benchmark cost into a
+  // full commercial should-cost. Zero means the two are identical.
+  overhead_pct: 0,
+  margin_pct: 0,
+  overheads_in_tender: true,
+}
+
+function quarterIndex(quarter) {
+  const match = /^(\d{4})Q([1-4])$/.exec(String(quarter || ''))
+  if (!match) return null
+  return Number(match[1]) * 4 + Number(match[2])
+}
+
+function quarterLabel(year, q) {
+  return year + 'Q' + q
+}
+
+function currentCalendarQuarter() {
+  const now = new Date()
+  return quarterLabel(now.getFullYear(), Math.floor(now.getMonth() / 3) + 1)
+}
+
+function quarterRange(first, last) {
+  const start = quarterIndex(first)
+  const end = quarterIndex(last)
+  if (start === null || end === null || end < start) return []
+  const out = []
+  for (let key = start; key <= end; key += 1) {
+    out.push(quarterLabel(Math.floor((key - 1) / 4), ((key - 1) % 4) + 1))
+  }
+  return out
 }
 
 export default function App() {
@@ -43,6 +75,8 @@ export default function App() {
   const [countryCode, setCountryCode] = useState('SG')
 
   const [tpiRows, setTpiRows] = useState([])
+  const [cpiRows, setCpiRows] = useState([])
+  const [freshness, setFreshness] = useState(null)
   const [materialRows, setMaterialRows] = useState([])
   const [benchmarkRates, setBenchmarkRates] = useState([])
   const [classifierRules, setClassifierRules] = useState(null)
@@ -58,6 +92,9 @@ export default function App() {
   const [tenderQuarter, setTenderQuarter] = useState('2024Q4')
   const [tpiSeries, setTpiSeries] = useState('BCA')
   const [threshold, setThreshold] = useState('15')
+  // How a stale index observation is brought up to the tender quarter.
+  // 'cpi' (default) bridges it with the consumer price index; 'none' holds it.
+  const [bridgeMode, setBridgeMode] = useState('cpi')
   const [adjustments, setAdjustments] = useState(NO_ADJUSTMENTS)
   // Analyst-supplied rates for lines the library cannot price, keyed by item id.
   const [manualRates, setManualRates] = useState({})
@@ -111,10 +148,12 @@ export default function App() {
           api.listClassifierRules({ country: countryCode }),
           api.listUploads(countryCode),
           api.listRegions({ country: countryCode }),
+          api.listCpi({ country: countryCode }),
         ])
         if (cancelled) return
         const tpi = responses[0]
         setTpiRows(tpi)
+        setCpiRows(responses[6])
         setMaterialRows(responses[1])
         setBenchmarkRates(responses[2])
         setClassifierRules(responses[3])
@@ -159,6 +198,27 @@ export default function App() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [countryCode, countries.length])
 
+  // ------------------------------------------------------- index freshness --
+  // How current every index series is against the quarter being priced, and what
+  // the CPI bridge would do about it. Displayed in the controls, the index
+  // dashboard and the assumptions panel, and used to explain the freshness tile.
+  useEffect(function () {
+    let cancelled = false
+    async function loadFreshness() {
+      try {
+        const data = await api.indexFreshness({
+          country: countryCode,
+          reference_quarter: tenderQuarter,
+        })
+        if (!cancelled) setFreshness(data)
+      } catch (error) {
+        if (!cancelled) setFreshness(null)
+      }
+    }
+    if (countryCode) loadFreshness()
+    return function () { cancelled = true }
+  }, [countryCode, tenderQuarter])
+
   function applyUploadDetail(detail) {
     const items = detail.items || []
     setUpload({
@@ -200,10 +260,11 @@ export default function App() {
       tpi_series_name: tpiSeries,
       variance_threshold: Number(threshold) || 0,
       region_code: regionCode || null,
+      index_bridge: bridgeMode,
       adjustments: adjustments,
       manual_rates: supplied,
     }
-  }, [tenderQuarter, tpiSeries, threshold, regionCode, adjustmentKey, manualKey])
+  }, [tenderQuarter, tpiSeries, threshold, regionCode, bridgeMode, adjustmentKey, manualKey])
 
   const runBenchmark = useCallback(async function () {
     if (!uploadId) return
@@ -232,9 +293,10 @@ export default function App() {
       tpi_series_name: tpiSeries,
       variance_threshold: Number(threshold) || 0,
       region_code: regionCode || null,
+      index_bridge: bridgeMode,
       adjustments: adjustments,
     }
-  }, [tenderQuarter, tpiSeries, threshold, regionCode, adjustmentKey])
+  }, [tenderQuarter, tpiSeries, threshold, regionCode, bridgeMode, adjustmentKey])
 
   // ------------------------------------------------------------ sensitivity --
   async function runSensitivity(overrides) {
@@ -284,6 +346,10 @@ export default function App() {
     const response = await api.uploadBoQ(file, countryCode)
     setUpload(response)
     setSensitivity(null)
+    // A freshly uploaded BoQ is priced to date by default: the current calendar
+    // quarter, bridged with the CPI where the index has not published it yet.
+    // The seeded demonstration bills keep the quarter they were calibrated for.
+    setTenderQuarter(currentCalendarQuarter())
     setTab('variance')
     setUploads(await api.listUploads(countryCode))
     return response
@@ -335,6 +401,9 @@ export default function App() {
     ? result.lines.filter(function (l) { return l.provenance && l.provenance.is_placeholder }).length
     : 0
   const adjustmentsActive = result && result.adjustments_applied && !result.adjustments_applied.is_noop
+  const ohpActive = !!(
+    result && (result.totals.overhead_pct || result.totals.margin_pct)
+  )
   const seriesScopes = useMemo(function () {
     const seen = {}
     const out = []
@@ -353,8 +422,25 @@ export default function App() {
   const quarters = useMemo(function () {
     const set = []
     tpiRows.forEach(function (row) { if (set.indexOf(row.quarter) === -1) set.push(row.quarter) })
-    return set.length ? set.sort().reverse() : ['2024Q4']
-  }, [tpiRows])
+    if (!set.length) return ['2024Q4']
+    // A tender priced today may fall in a quarter the index has not published
+    // yet. Those quarters ARE selectable: the index is bridged with the CPI (or
+    // held, when bridging is switched off), and the selector says which.
+    const sorted = set.slice().sort()
+    const lastPublished = sorted[sorted.length - 1]
+    const cpiMonths = cpiRows.map(function (row) { return row.month }).sort()
+    const latestCpiQuarter = cpiMonths.length
+      ? quarterLabel(
+          Number(cpiMonths[cpiMonths.length - 1].slice(0, 4)),
+          Math.floor((Number(cpiMonths[cpiMonths.length - 1].slice(5, 7)) - 1) / 3) + 1,
+        )
+      : lastPublished
+    const reach = [currentCalendarQuarter(), latestCpiQuarter, lastPublished].sort().slice(-1)[0]
+    quarterRange(lastPublished, reach).forEach(function (quarter) {
+      if (set.indexOf(quarter) === -1) set.push(quarter)
+    })
+    return set.sort().reverse()
+  }, [tpiRows, cpiRows])
 
   const seriesNames = useMemo(function () {
     const set = []
@@ -419,10 +505,13 @@ export default function App() {
       </div>
 
       <div className="notice notice-warn">
-        <strong>Demonstration build.</strong> All bundled index values and benchmark rates for both
-        markets are synthetic placeholders carrying <code>is_placeholder: true</code>, a{' '}
+        <strong>Demonstration build.</strong> The bundled <em>index values</em> and benchmark rates
+        for both markets are synthetic placeholders carrying <code>is_placeholder: true</code>, a{' '}
         <code>source_url</code> and a <code># TODO: replace with actual ...</code> marker. Do not
-        use for a real tender decision.
+        use for a real tender decision. The monthly <strong>consumer price index</strong> used to
+        carry a stale index forward to the tender quarter, the India <strong>WPI</strong> series and
+        the material price series <em>are</em> real published data - the index dashboard marks each
+        row real or placeholder.
       </div>
 
       {result ? (
@@ -433,15 +522,31 @@ export default function App() {
             <div className="tile-sub">{result.totals.line_count} lines - {result.filename}</div>
           </div>
           <div className="tile">
-            <div className="tile-label">Should-cost total</div>
+            <div className="tile-label">
+              Should-cost total{ohpActive ? ' (benchmark cost)' : ''}
+            </div>
             <div className="tile-value">{money(result.totals.should_cost_total, currency)}</div>
             <div className="tile-sub">
               {result.tpi_series_name} index for {result.tender_quarter}
               {result.regional_factor !== 1
                 ? ' | ' + result.region_name + ' x' + result.regional_factor.toFixed(3)
                 : ''}
+              {ohpActive ? ' | before overheads and margin' : ''}
             </div>
           </div>
+          {ohpActive ? (
+            <div className="tile tile-full">
+              <div className="tile-label">Full should-cost (incl. OH&amp;P)</div>
+              <div className="tile-value">{money(result.totals.full_should_cost_total, currency)}</div>
+              <div className="tile-sub">
+                +{money(result.totals.overhead_amount_total, currency)} overheads (
+                {num(result.totals.overhead_pct, 1)}%) +{' '}
+                {money(result.totals.margin_amount_total, currency)} margin (
+                {num(result.totals.margin_pct, 1)}%)
+                {result.totals.overheads_in_tender ? ' | compared full-to-full' : ' | variance excludes OH&P'}
+              </div>
+            </div>
+          ) : null}
           <div className={'tile ' + (result.totals.total_variance_abs > 0 ? 'tile-bad' : 'tile-good')}>
             <div className="tile-label">Variance</div>
             <div className="tile-value">{money(result.totals.total_variance_abs, currency)}</div>
@@ -456,6 +561,27 @@ export default function App() {
             <div className="tile-label">Not benchmarked</div>
             <div className="tile-value">{result.totals.unbenchmarked_line_count}</div>
             <div className="tile-sub">{money(result.totals.unbenchmarked_boq_total, currency)} carried untested</div>
+          </div>
+          <div className={'tile ' + (result.index_bridge && result.index_bridge.applied ? 'tile-warn' : 'tile-good')}>
+            <div className="tile-label">Index currency</div>
+            <div className="tile-value">
+              {result.index_bridge && result.index_bridge.observation_quarter
+                ? result.index_bridge.observation_quarter
+                : 'n/a'}
+            </div>
+            <div className="tile-sub">
+              {result.index_bridge && result.index_bridge.applied
+                ? 'last published observation - bridged to ' + result.index_bridge.bridged_through_month
+                  + ' with ' + result.index_bridge.cpi_series_name
+                  + ' (x' + Number(result.index_bridge.cpi_bridge_factor).toFixed(4) + ')'
+                : result.index_bridge && result.index_bridge.lag_quarters > 0
+                  ? 'held at the last published observation, '
+                    + result.index_bridge.lag_quarters + ' quarter(s) stale - '
+                    + (result.index_bridge.mode === 'none'
+                      ? 'bridging is switched off'
+                      : 'no consumer price series available to bridge with')
+                  : 'published observation covers ' + result.tender_quarter}
+            </div>
           </div>
         </div>
       ) : null}
@@ -502,11 +628,15 @@ export default function App() {
           regionCode={regionCode}
           activeRegion={regions.filter(function (r) { return r.region_code === regionCode })[0]}
           seriesScope={seriesScopes.filter(function (s) { return s.series_name === tpiSeries })[0]}
+          freshness={freshness}
+          bridgeMode={bridgeMode}
+          indexBridge={result ? result.index_bridge : null}
           onChange={function (patch) {
             if (patch.tenderQuarter !== undefined) setTenderQuarter(patch.tenderQuarter)
             if (patch.tpiSeries !== undefined) setTpiSeries(patch.tpiSeries)
             if (patch.threshold !== undefined) setThreshold(patch.threshold)
             if (patch.regionCode !== undefined) setRegionCode(patch.regionCode)
+            if (patch.bridgeMode !== undefined) setBridgeMode(patch.bridgeMode)
           }}
           onRun={runBenchmark}
         />
@@ -518,6 +648,11 @@ export default function App() {
           tpiSeries={tpiSeries}
           tpiQuarter={tenderQuarter}
           publishedTpi={result ? result.lines[0] && result.lines[0].tpi_value_published : null}
+          usedTpi={result ? result.lines[0] && result.lines[0].tpi_value : null}
+          indexBridge={result ? result.index_bridge : null}
+          benchmarkCost={result ? result.totals.should_cost_total : null}
+          fullShouldCost={result ? result.totals.full_should_cost_total : null}
+          currency={currency}
           breakEvenPct={sensitivity ? sensitivity.break_even_scale_pct : null}
           disabled={loading}
           onChange={updateAdjustments}
@@ -573,11 +708,16 @@ export default function App() {
       {tab === 'indices' ? (
         <IndexDashboard
           tpiRows={tpiRows}
+          cpiRows={cpiRows}
+          freshness={freshness}
+          indexBridge={result ? result.index_bridge : null}
           materialRows={materialRows}
           benchmarkRates={benchmarkRates}
           seriesScopes={seriesScopes}
           country={country || {}}
           currency={currency}
+          tenderQuarter={tenderQuarter}
+          bridgeMode={bridgeMode}
         />
       ) : null}
 
@@ -597,30 +737,12 @@ export default function App() {
           assumptions={result.assumptions}
           placeholderLineCount={placeholderLineCount}
           adjustmentsActive={adjustmentsActive}
+          indexBridge={result.index_bridge}
         />
       ) : null}
 
       {classifierRules && tab === 'variance' ? (
-        <section className="panel">
-          <h2>Classification rules - {classifierRules.classification_standard}</h2>
-          <p className="muted small">{classifierRules.measurement_note}</p>
-          <p className="muted small">{classifierRules.note}</p>
-          <div className="table-scroll">
-            <table className="data-table compact">
-              <thead><tr><th>Section</th><th>Rule</th></tr></thead>
-              <tbody>
-                {classifierRules.rules.map(function (rule) {
-                  return (
-                    <tr key={rule.smm2_section}>
-                      <td><span className="section-pill">{rule.smm2_section}</span></td>
-                      <td className="mono small">{rule.rule}</td>
-                    </tr>
-                  )
-                })}
-              </tbody>
-            </table>
-          </div>
-        </section>
+        <ClassificationRules rules={classifierRules} />
       ) : null}
 
       <footer className="app-footer muted">

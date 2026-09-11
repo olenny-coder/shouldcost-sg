@@ -301,13 +301,50 @@ button.linkish {
   border: 2px solid #fcd34d; border-radius: var(--radius-lg);
   padding: 18px; margin-bottom: 16px; box-shadow: var(--shadow);
 }
-.assumptions-head h2 { margin: 0 0 4px; font-size: 17px; }
-.basis-legend { display: flex; gap: 8px; margin: 10px 0; flex-wrap: wrap; }
+.assumptions-head h2 { margin: 0 0 4px; font-size: 17px; display: flex; align-items: center; gap: 8px; }
+.basis-legend { display: flex; gap: 8px; margin: 10px 0; flex-wrap: wrap; align-items: center; }
 .assumptions-block { margin-top: 14px; }
 .assumptions-block h3 { margin: 0 0 6px; font-size: 14px; }
 .warning-list li, .assumption-list li { margin-bottom: 7px; font-size: 13px; }
 .warning-list { padding-left: 20px; margin: 0; }
 .assumption-list { padding-left: 20px; margin: 0; }
+
+/* Collapsed panel: the counts and the amber data-quality chips stay on screen,
+   so folding the text away can never hide that a figure is assumed. */
+.assumptions-strip {
+  display: flex; flex-wrap: wrap; gap: 8px; align-items: center;
+  margin-top: 8px; padding-top: 8px; border-top: 1px dashed #fcd34d;
+}
+.assumptions-strip .linkish { font-size: 12px; }
+button.block-toggle {
+  background: none; border: 0; padding: 0; cursor: pointer;
+  font: inherit; font-weight: 700; color: var(--blue-700);
+  display: inline-flex; align-items: center; gap: 6px; text-align: left;
+}
+button.block-toggle:hover { text-decoration: underline; }
+button.block-toggle .chev { font-size: 10px; }
+.bridge-line { color: #92400e; }
+.bridge-line a { color: inherit; }
+.ohp-readout { color: #6d28d9; }
+.ohp-readout a { color: inherit; }
+
+/* ------------------------------------------------- overheads and margin -- */
+.ohp-block {
+  margin-top: 14px; padding: 12px 14px;
+  border: 1px solid var(--blue-200); border-radius: var(--radius);
+  background: var(--blue-50);
+}
+.ohp-toggle {
+  display: flex; gap: 10px; align-items: flex-start;
+  font-size: 13px; line-height: 1.45; cursor: pointer;
+}
+.ohp-toggle input { margin-top: 3px; flex: 0 0 auto; }
+.ohp-block p { margin: 10px 0 0; }
+.tile-full {
+  border: 2px solid #c4b5fd;
+  background: linear-gradient(180deg, #faf5ff, #f5f3ff);
+}
+.tile-full .tile-label { color: #6d28d9; }
 
 /* --------------------------------------------------------------- charts -- */
 .chart-card {

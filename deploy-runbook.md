@@ -466,7 +466,7 @@ To switch:
 3. Redeploy, then run `python -m app.etl` in the Render Shell.
 
 **No code change is needed.** `app/config.py` normalises both `postgres://` and `postgresql://`,
-and the app was verified against real PostgreSQL 16 - the full 205-test suite passes on Postgres
+and the app was verified against real PostgreSQL 16 - the full 205-test suite then in the repository passed on Postgres (the suite is now 229 tests; the Postgres leg has not been re-run since the CPI bridge was added)
 as well as SQLite.
 
 Supabase is the alternative, but its free plan **pauses a project after one week of inactivity**

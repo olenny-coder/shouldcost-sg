@@ -159,6 +159,7 @@ ETL: row counts after load
   material_prices    180
   benchmark_rates    20
   regional_factors   13
+  cpi_series          55
   boq_uploads        2
   boq_items          40
 ETL: real published data vs synthetic placeholder
@@ -166,7 +167,12 @@ ETL: real published data vs synthetic placeholder
   material_prices     180 real /  180 total   [REAL]
   benchmark_rates       0 real /   20 total   [placeholder]
   regional_factors      0 real /   13 total   [placeholder]
+  cpi_series           55 real /   55 total   [REAL]
 ```
+
+(`cpi_series` is seeded from `backend/data/cpi_series.csv`, which is the real monthly consumer price
+index for Singapore. It is what carries a stale index observation forward to the tender quarter - see
+README "Keeping the indexes current".)
 
 It is idempotent, so re-running is always safe. If the Shell tab is not offered, add a temporary
 **Job** to the blueprint (```type: job```, ```runtime: python```, ```rootDir: backend```,

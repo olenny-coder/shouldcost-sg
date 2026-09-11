@@ -35,6 +35,7 @@ class CountryOut(BaseModel):
     measurement_standard: str
     measurement_note: str
     default_tpi_series: str
+    default_cpi_series: str = ""
     unit_convention: str
     sources: list[SourceOut]
 
@@ -71,6 +72,27 @@ class RegionalFactorOut(ORMModel):
     source_url: str
     source_date: str
     notes: str
+    is_placeholder: bool
+    provenance_note: str = ""
+    replace_with: str = ""
+
+
+class CPIPointOut(ORMModel):
+    """One monthly consumer price index observation.
+
+    These are REAL published values for both markets, and they are what the engine
+    uses to carry a stale index observation forward to the tender quarter.
+    """
+
+    id: int
+    country: str
+    series_name: str
+    month: str
+    base_year: int
+    base_value: float
+    currency: str
+    value: float
+    source_url: str
     is_placeholder: bool
     provenance_note: str = ""
     replace_with: str = ""
@@ -200,12 +222,39 @@ class IndexAdjustments(BaseModel):
         description="Per-section percentage shift on the benchmark base rate, keyed by section name.",
     )
 
+    # ------------------------------------------------------- overheads & margin --
+    overhead_pct: float = Field(
+        0.0, ge=0.0, le=500.0,
+        description=(
+            "Overhead percentage added to the benchmark cost of every benchmarked line, to turn a "
+            "rate into a full cost. An analyst assumption, so affected lines become basis='assumed'."
+        ),
+    )
+    margin_pct: float = Field(
+        0.0, ge=0.0, le=500.0,
+        description=(
+            "Profit margin percentage, applied AFTER overheads (compounded on them). An analyst "
+            "assumption, disclosed as such."
+        ),
+    )
+    overheads_in_tender: bool = Field(
+        True,
+        description=(
+            "Whether the tendered BoQ rates already include overheads and profit. True (default): "
+            "each line's variance is measured full-to-full, against the benchmark rate grossed up "
+            "by the same percentages. False: overheads and margin still build the full should-cost, "
+            "but the variance test compares against the benchmark rate before overheads."
+        ),
+    )
+
     def is_noop(self) -> bool:
         return (
             self.tpi_value_override is None
             and self.tpi_scale_pct == 0.0
             and self.base_rate_scale_pct == 0.0
             and not any(v for v in self.section_rate_scale_pct.values())
+            and self.overhead_pct == 0.0
+            and self.margin_pct == 0.0
         )
 
 
@@ -238,6 +287,16 @@ class BenchmarkRequest(BaseModel):
     variance_threshold: float = Field(15.0, ge=0.0, le=1000.0)
     region_code: str | None = Field(
         None, description="Regional cost multiplier within the country, e.g. IN: DEL | MUM | BLR."
+    )
+    index_bridge: Literal["cpi", "none"] = Field(
+        "cpi",
+        description=(
+            "How a stale index observation is brought up to the tender quarter. 'cpi' (default) "
+            "carries the last published observation forward by the observed change in the "
+            "national consumer price index, and marks every affected line basis='assumed' with "
+            "the cpi_bridged flag. 'none' holds the last observation unchanged and warns that "
+            "the index is stale."
+        ),
     )
     adjustments: IndexAdjustments | None = None
     manual_rates: dict[str, ManualRate] = Field(
@@ -278,6 +337,17 @@ class BenchmarkLine(ORMModel):
     should_cost_amount: float
     variance_amount: float
 
+    # Overheads and margin: the percentages that turn the benchmark rate into a FULL
+    # cost, and the amounts they add. Zero when unused.
+    full_adjusted_benchmark_rate: float | None = None
+    overhead_pct: float = 0.0
+    margin_pct: float = 0.0
+    overhead_amount: float = 0.0
+    margin_amount: float = 0.0
+    full_should_cost_amount: float | None = None
+    overheads_in_tender: bool = True
+    compared_against_full: bool = False
+
     tpi_series_name: str
     tpi_quarter_requested: str
     tpi_quarter_used: str
@@ -286,6 +356,17 @@ class BenchmarkLine(ORMModel):
     tpi_base_value: float
     tpi_ratio: float
     tpi_fallback_used: bool
+
+    # CPI bridge: how the index value for the tender quarter was obtained when the
+    # selected series had not published that quarter yet.
+    tpi_bridged: bool = False
+    cpi_bridge_factor: float = 1.0
+    cpi_series_name: str = ""
+    cpi_month_used: str = ""
+    cpi_value_used: float | None = None
+    cpi_base_value: float | None = None
+    cpi_source_url: str = ""
+    index_lag_quarters: int = 0
 
     scope_factor: float
     scope_excluded: bool
@@ -306,6 +387,11 @@ class SectionAggregate(ORMModel):
     benchmarked_item_count: int
     boq_amount: float
     should_cost_amount: float
+    full_should_cost_amount: float = 0.0
+    overhead_amount: float = 0.0
+    margin_amount: float = 0.0
+    full_variance_amount: float = 0.0
+    full_variance_pct: float | None = None
     variance_amount: float
     variance_abs: float
     variance_pct: float | None
@@ -314,7 +400,10 @@ class SectionAggregate(ORMModel):
 
 
 class WaterfallComponent(ORMModel):
-    component: Literal["material", "labour", "market_risk", "scope", "unexplained"]
+    component: Literal[
+        "material", "labour", "market_risk", "cpi_bridge", "scope", "overhead", "margin",
+        "unexplained",
+    ]
     amount: float
     basis: Basis
     method: str
@@ -331,6 +420,24 @@ class BenchmarkTotals(ORMModel):
     unbenchmarked_line_count: int
     line_count: int
     breached_line_count: int
+    # Overheads and margin: the analyst inputs and the full cost they produce. The
+    # full total equals should_cost_total when no percentages were supplied.
+    overhead_pct: float = 0.0
+    margin_pct: float = 0.0
+    overheads_in_tender: bool = True
+    overhead_amount_total: float = 0.0
+    margin_amount_total: float = 0.0
+    full_should_cost_total: float = 0.0
+    full_variance_abs: float = 0.0
+    full_variance_pct: float | None = None
+    # What the headline variance was measured against, so the UI can label it.
+    variance_basis_total: float = 0.0
+    variance_basis: str = ""
+    # True when the index used for the tender quarter is not a published
+    # observation but was carried forward with the CPI. Those lines are 'assumed'.
+    index_bridge_applied: bool = False
+    index_lag_quarters: int = 0
+    index_bridged_lines: int = 0
     basis: Basis
 
 
@@ -353,6 +460,9 @@ class BenchmarkResponse(BaseModel):
     regional_factor_is_placeholder: bool
     regional_factor_source: str
     adjustments_applied: dict
+    # Index freshness: which quarter the selected series last published, how stale
+    # that is, and the CPI bridge that carried it forward (see README).
+    index_bridge: dict = Field(default_factory=dict)
     lines: list[BenchmarkLine]
     sections: list[SectionAggregate]
     totals: BenchmarkTotals
@@ -376,6 +486,9 @@ class SensitivityRequest(BaseModel):
         description="Symmetric +/- percentage applied to one section at a time for the tornado.",
     )
     region_code: str | None = None
+    index_bridge: Literal["cpi", "none"] = Field(
+        "cpi", description="Same meaning as on POST /api/boq/{id}/benchmark."
+    )
     adjustments: IndexAdjustments | None = None
     manual_rates: dict[str, ManualRate] = Field(default_factory=dict)
 
@@ -415,6 +528,8 @@ class SensitivityResponse(BaseModel):
     variance_threshold: float
     section_scale_pct: float
     baseline_tpi_value: float
+    baseline_tpi_value_published: float | None = None
+    index_bridge: dict = Field(default_factory=dict)
     baseline: BenchmarkTotals
     break_even_scale_pct: float | None
     break_even_tpi_value: float | None
@@ -429,3 +544,32 @@ class HealthOut(BaseModel):
     status: str
     db: str
     environment: str
+
+
+class IndexFreshnessOut(BaseModel):
+    """How current each index series is, and what it would take to bridge it.
+
+    Answers the question the engine asks on every run: what is the last published
+    observation of this series, how stale is that against the quarter being priced,
+    and what does the CPI bridge do about it?
+    """
+
+    country: str
+    country_name: str
+    currency: str
+    reference_quarter: str
+    cpi_series_name: str
+    cpi_series_available: bool
+    cpi_latest_month: str | None = None
+    cpi_latest_value: float | None = None
+    cpi_base_year: int | None = None
+    cpi_observations: int = 0
+    cpi_is_placeholder: bool = False
+    cpi_source_url: str = ""
+    # Consumer price series loaded for this market that are NOT the one the
+    # registry declares for bridging. Reported, never silently used.
+    cpi_other_series: list[str] = Field(default_factory=list)
+    # Every consumer price series available here, with its coverage, so the UI can
+    # show why a bridge did or did not happen.
+    cpi_series_list: list[dict] = Field(default_factory=list)
+    series: list[dict] = Field(default_factory=list)

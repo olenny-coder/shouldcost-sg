@@ -7,14 +7,30 @@ Formula contract (do not change without updating README and the tests):
     variance_pct            = (variance_abs / adjusted_benchmark_rate) * 100
     should_cost_amount      = quantity * adjusted_benchmark_rate
 
-Two multipliers are layered on top of the published values, both of which are
-ANALYST ASSUMPTIONS rather than observations:
+Three multipliers are layered on top of the published values. The first is the
+CPI bridge, the other two are ANALYST ASSUMPTIONS rather than observations:
 
-    current_tpi  = (published_tpi or tpi_value_override) * (1 + tpi_scale_pct/100)
+    current_tpi  = (published_tpi * cpi_bridge_factor) * (1 + tpi_scale_pct/100)
     base_rate    = published_base_rate * (1 + (base_rate_scale_pct + section_scale_pct)/100)
 
-Any line touched by a non-zero multiplier is reported with basis="assumed" and
-flagged user_adjusted, and the whole adjustment set is restated in assumptions[].
+The CPI BRIDGE. Published construction cost indexes lag the tender quarter: the
+BCA series is a quarterly release, and the WPI appears about two months after the
+month it describes. When the requested quarter is later than the last observation
+of the selected series, the last observation is carried forward by the observed
+change in the country's monthly CONSUMER PRICE INDEX between the two quarters:
+
+    index_value(requested) = index_value(last_observed_quarter)
+                             * cpi(covered_through) / cpi(last_observed_quarter)
+
+Both CPI endpoints are the mean of the months available in that quarter. This is
+a MODELLED step: consumer prices are not construction costs. So every bridged line
+is basis="assumed" and flagged cpi_bridged, the bridge appears as its own step in
+the waterfall, and it is restated in assumptions[]. Set index_bridge="none" on the
+request to switch it off, in which case the last observation is simply held and a
+warning says so.
+
+An absolute index override replaces the BRIDGED level, so an override always wins
+over the bridge.
 
 scope_factor is 1.0 by default. It only moves away from 1.0 when the selected TPI
 series explicitly EXCLUDES a section that is present in the BoQ (the canonical
@@ -34,7 +50,7 @@ from sqlalchemy.orm import Session
 
 from . import classifier
 from .countries import DEFAULT_COUNTRY, Country, get_country
-from .models import BenchmarkRate, BoQItem, RegionalFactor, TPISeries
+from .models import BenchmarkRate, BoQItem, CPISeries, RegionalFactor, TPISeries
 
 BASIS_MEASURED = "measured"
 BASIS_DERIVED = "derived"
@@ -57,7 +73,15 @@ LABOUR_SHARE = 0.45
 
 CONFIDENCE_ORDER = {"high": 0, "medium": 1, "low": 2}
 
+# How a stale index observation is brought up to the tender quarter.
+#   "cpi"  - carry it forward by the observed CPI movement (default)
+#   "none" - hold the last observation and say so
+BRIDGE_CPI = "cpi"
+BRIDGE_NONE = "none"
+BRIDGE_MODES = (BRIDGE_CPI, BRIDGE_NONE)
+
 _QUARTER_RE = re.compile(r"^(\d{4})\s*[Qq]([1-4])$")
+_MONTH_RE = re.compile(r"^(\d{4})-(\d{2})$")
 
 # Exclusion phrases used by the published series, mapped to the canonical
 # sections they remove from scope. An empty set means the exclusion has no
@@ -114,6 +138,35 @@ def format_quarter(year: int, q: int) -> str:
     return f"{year}Q{q}"
 
 
+def parse_month(month: str) -> tuple[int, int]:
+    match = _MONTH_RE.match((month or "").strip())
+    if not match:
+        raise ValueError(f"Invalid month {month!r}. Expected the form YYYY-MM, for example 2026-07.")
+    return int(match.group(1)), int(match.group(2))
+
+
+def month_sort_key(month: str) -> int:
+    year, number = parse_month(month)
+    return year * 12 + number
+
+
+def quarter_months(quarter: str) -> list[str]:
+    """The three YYYY-MM labels that make up a quarter."""
+    year, q = parse_quarter(quarter)
+    first = (q - 1) * 3 + 1
+    return [f"{year:04d}-{number:02d}" for number in range(first, first + 3)]
+
+
+def quarter_of_month(month: str) -> str:
+    year, number = parse_month(month)
+    return format_quarter(year, (number - 1) // 3 + 1)
+
+
+def months_between(start_month: str, end_month: str) -> int:
+    """Whole months from start to end. Negative when end precedes start."""
+    return month_sort_key(end_month) - month_sort_key(start_month)
+
+
 # --------------------------------------------------------------------------- #
 # Units
 # --------------------------------------------------------------------------- #
@@ -128,6 +181,290 @@ def normalise_unit(unit: str | None) -> str:
 # --------------------------------------------------------------------------- #
 # TPI resolution
 # --------------------------------------------------------------------------- #
+@dataclass
+class CPIBridge:
+    """The modelled step that carries a stale index observation to the tender quarter.
+
+    `applied` is False whenever the observation already covers the requested
+    quarter, when the analyst switched the bridge off, or when no usable CPI
+    series is loaded - in each case `reason` says which.
+    """
+
+    applied: bool
+    reason: str
+    country: str
+    series_name: str
+    requested_quarter: str
+    observation_quarter: str
+    lag_quarters: int
+    requested_mode: str = BRIDGE_CPI
+    from_value: float | None = None
+    from_months: list[str] = field(default_factory=list)
+    to_value: float | None = None
+    to_months: list[str] = field(default_factory=list)
+    covered_through_month: str | None = None
+    shortfall_months: int = 0
+    factor: float = 1.0
+    base_year: int | None = None
+    base_value: float | None = None
+    currency: str = ""
+    source_url: str = ""
+    is_placeholder: bool = False
+    provenance_note: str = ""
+    replace_with: str = ""
+    published_index_value: float | None = None
+    bridged_index_value: float | None = None
+    # Coverage of the series actually used (first/last published month), and, when
+    # no series could span both endpoints, what each candidate covered.
+    first_month: str | None = None
+    last_month: str | None = None
+    alternatives: list[dict] = field(default_factory=list)
+
+    @property
+    def to_quarter(self) -> str:
+        """The quarter the bridge actually reached (its last month's quarter)."""
+        if not self.covered_through_month:
+            return self.observation_quarter
+        return quarter_of_month(self.covered_through_month)
+
+    @property
+    def partial(self) -> bool:
+        """True when only some months of the target quarter were available."""
+        if not self.to_months:
+            return False
+        return len(self.to_months) < 3
+
+    @property
+    def short(self) -> bool:
+        """True when the bridge could not reach the end of the requested quarter."""
+        return self.shortfall_months > 0
+
+    def as_dict(self) -> dict:
+        return {
+            "applied": self.applied,
+            "reason": self.reason,
+            "mode": self.requested_mode,
+            "series_name": self.series_name,
+            "requested_quarter": self.requested_quarter,
+            "observation_quarter": self.observation_quarter,
+            "lag_quarters": self.lag_quarters,
+            "bridged_to_quarter": self.to_quarter if self.applied else None,
+            "bridged_through_month": self.covered_through_month,
+            "shortfall_months": self.shortfall_months,
+            "partial_quarter": self.partial if self.applied else False,
+            "cpi_series_name": self.series_name,
+            "cpi_base_year": self.base_year,
+            "cpi_base_value": self.base_value,
+            "cpi_from_value": round(self.from_value, 4) if self.from_value is not None else None,
+            "cpi_from_months": list(self.from_months),
+            "cpi_to_value": round(self.to_value, 4) if self.to_value is not None else None,
+            "cpi_to_months": list(self.to_months),
+            "cpi_bridge_factor": round(self.factor, 6),
+            "cpi_source_url": self.source_url,
+            "cpi_is_placeholder": self.is_placeholder,
+            "cpi_provenance_note": self.provenance_note,
+            "cpi_first_month": self.first_month,
+            "cpi_last_month": self.last_month,
+            "cpi_series_considered": list(self.alternatives),
+            "index_value_published": (
+                round(self.published_index_value, 4)
+                if self.published_index_value is not None
+                else None
+            ),
+            "index_value_bridged": (
+                round(self.bridged_index_value, 4)
+                if self.bridged_index_value is not None
+                else None
+            ),
+            "index_value_used": (
+                round(self.bridged_index_value, 4)
+                if self.applied and self.bridged_index_value is not None
+                else (
+                    round(self.published_index_value, 4)
+                    if self.published_index_value is not None
+                    else None
+                )
+            ),
+        }
+
+
+def _cpi_rows(session: Session, country: str, series_name: str = "") -> list[CPISeries]:
+    statement = select(CPISeries).where(CPISeries.country == country)
+    if series_name:
+        statement = statement.where(CPISeries.series_name == series_name.strip().upper())
+    return list(session.scalars(statement.order_by(CPISeries.series_name, CPISeries.month)))
+
+
+def _bridge_with_series(
+    rows: list[CPISeries],
+    *,
+    requested_quarter: str,
+    observation_quarter: str,
+) -> CPIBridge:
+    """Attempt the bridge against ONE consumer price series.
+
+    Returns the bridge with `applied=False` and a reason when that particular series
+    cannot span both endpoints.
+    """
+    series_name = rows[0].series_name
+    bridge = CPIBridge(
+        applied=False,
+        reason="",
+        country=rows[0].country,
+        series_name=series_name,
+        requested_quarter=requested_quarter,
+        observation_quarter=observation_quarter,
+        lag_quarters=quarter_sort_key(requested_quarter) - quarter_sort_key(observation_quarter),
+        base_year=rows[-1].base_year,
+        base_value=rows[-1].base_value,
+        currency=rows[-1].currency,
+        source_url=rows[-1].source_url,
+        is_placeholder=any(row.is_placeholder for row in rows),
+        provenance_note=rows[-1].provenance_note,
+        replace_with=rows[-1].replace_with or "",
+        first_month=rows[0].month,
+        last_month=rows[-1].month,
+    )
+
+    by_month = {row.month: row.value for row in rows}
+    available = sorted(by_month)
+
+    from_months = [month for month in quarter_months(observation_quarter) if month in by_month]
+    if not from_months:
+        bridge.reason = "no_cpi_observation_for_the_observation_quarter"
+        return bridge
+
+    target_months = [month for month in quarter_months(requested_quarter) if month in by_month]
+    if not target_months:
+        # The requested quarter is not covered yet. Bridge as far as the data
+        # allows - to the latest published month after the observation - rather
+        # than silently pretending the index is current.
+        quarter_end = quarter_months(requested_quarter)[-1]
+        candidates = [
+            month
+            for month in available
+            if month_sort_key(month) > month_sort_key(from_months[-1])
+            and month_sort_key(month) <= month_sort_key(quarter_end)
+        ]
+        if not candidates:
+            bridge.reason = "no_cpi_observation_after_the_index_observation"
+            return bridge
+        target_months = [candidates[-1]]
+
+    from_value = sum(by_month[month] for month in from_months) / len(from_months)
+    to_value = sum(by_month[month] for month in target_months) / len(target_months)
+    if not from_value:
+        bridge.reason = "cpi_value_at_the_observation_quarter_is_zero"
+        return bridge
+
+    bridge.applied = True
+    bridge.reason = "bridged_with_cpi"
+    bridge.from_months = from_months
+    bridge.to_months = target_months
+    bridge.from_value = from_value
+    bridge.to_value = to_value
+    bridge.covered_through_month = target_months[-1]
+    bridge.shortfall_months = max(
+        0, months_between(target_months[-1], quarter_months(requested_quarter)[-1])
+    )
+    bridge.factor = to_value / from_value
+    return bridge
+
+
+def resolve_cpi_bridge(
+    session: Session,
+    *,
+    country: str,
+    observation_quarter: str,
+    requested_quarter: str,
+    mode: str = BRIDGE_CPI,
+    published_index_value: float | None = None,
+) -> CPIBridge:
+    """Carry a stale index observation forward using the observed CPI movement.
+
+    A market may have more than one consumer price series loaded - India carries the
+    publisher's current 2024-based series and its predecessor, which do not overlap.
+    The series the registry declares is tried first; any other series loaded for the
+    country is tried next, and the first one that spans BOTH endpoints wins. Series
+    are never chained or spliced across a base change: if no single series covers the
+    two quarters, the bridge is reported as unavailable with that exact reason.
+
+    Returns an unapplied bridge (with a machine-readable `reason`) whenever the
+    bridge cannot or should not be computed. It never raises: a missing CPI series
+    must degrade to "hold the last observation and warn", not break the run.
+    """
+    code = (country or DEFAULT_COUNTRY).strip().upper()
+    registry: Country = get_country(code)
+    lag = quarter_sort_key(requested_quarter) - quarter_sort_key(observation_quarter)
+    preferred = (registry.default_cpi_series or "").upper()
+
+    bridge = CPIBridge(
+        applied=False,
+        reason="",
+        country=code,
+        series_name=preferred,
+        requested_quarter=requested_quarter,
+        observation_quarter=observation_quarter,
+        lag_quarters=lag,
+        requested_mode=(
+            BRIDGE_NONE if (mode or BRIDGE_CPI).strip().lower() == BRIDGE_NONE else BRIDGE_CPI
+        ),
+        published_index_value=published_index_value,
+    )
+
+    if lag <= 0:
+        bridge.reason = "index_observation_covers_requested_quarter"
+        return bridge
+    if (mode or BRIDGE_CPI).strip().lower() == BRIDGE_NONE:
+        bridge.reason = "bridge_disabled_by_analyst"
+        return bridge
+    if not preferred:
+        bridge.reason = "no_cpi_series_configured_for_country"
+        return bridge
+
+    rows = _cpi_rows(session, code)
+    if not rows:
+        bridge.reason = "no_cpi_observations_loaded"
+        return bridge
+
+    by_series: dict[str, list[CPISeries]] = {}
+    for row in rows:
+        by_series.setdefault(row.series_name, []).append(row)
+
+    order = [name for name in (preferred,) if name in by_series]
+    order += [name for name in sorted(by_series) if name not in order]
+
+    attempts: list[dict] = []
+    for name in order:
+        candidate = _bridge_with_series(
+            by_series[name],
+            requested_quarter=requested_quarter,
+            observation_quarter=observation_quarter,
+        )
+        candidate.requested_mode = bridge.requested_mode
+        candidate.published_index_value = published_index_value
+        if candidate.applied:
+            candidate.alternatives = attempts
+            return candidate
+        attempts.append(
+            {
+                "series_name": name,
+                "base_year": by_series[name][-1].base_year,
+                "first_month": by_series[name][0].month,
+                "last_month": by_series[name][-1].month,
+                "reason": candidate.reason,
+            }
+        )
+
+    bridge.reason = (
+        "no_cpi_series_covers_both_quarters"
+        if len(attempts) > 1
+        else attempts[0]["reason"]
+    )
+    bridge.alternatives = attempts
+    return bridge
+
+
 @dataclass
 class ResolvedTPI:
     country: str
@@ -144,6 +481,21 @@ class ResolvedTPI:
     is_placeholder: bool
     replace_with: str
     fallback_used: bool
+    # The observation as published, before any CPI bridge or analyst adjustment.
+    value_published: float = 0.0
+    bridge: CPIBridge | None = None
+
+    @property
+    def bridge_applied(self) -> bool:
+        return bool(self.bridge and self.bridge.applied)
+
+    @property
+    def bridge_factor(self) -> float:
+        return self.bridge.factor if self.bridge_applied else 1.0
+
+    @property
+    def lag_quarters(self) -> int:
+        return quarter_sort_key(self.requested_quarter) - quarter_sort_key(self.resolved_quarter)
 
     def ratio_for(self, current_value: float) -> float:
         if not self.base_value:
@@ -154,14 +506,27 @@ class ResolvedTPI:
     def ratio(self) -> float:
         return self.ratio_for(self.value)
 
+    @property
+    def published_ratio(self) -> float:
+        """Ratio from the published observation alone, with no bridge applied."""
+        return self.ratio_for(self.value_published or self.value)
+
 
 def resolve_tpi(
-    session: Session, series_name: str, tender_quarter: str, country: str = DEFAULT_COUNTRY
+    session: Session,
+    series_name: str,
+    tender_quarter: str,
+    country: str = DEFAULT_COUNTRY,
+    *,
+    bridge: str = BRIDGE_CPI,
 ) -> ResolvedTPI:
     """Resolve a TPI observation for one country.
 
     Fallback order: exact series + exact quarter, then exact series + nearest
-    PRIOR quarter. Anything else raises TPILookupError with an explicit message.
+    PRIOR quarter, carried forward to the requested quarter by the observed CPI
+    movement (see the module docstring). Pass bridge="none" to hold the last
+    observation instead. Anything else raises TPILookupError with an explicit
+    message.
     """
     requested = quarter_sort_key(tender_quarter)  # validates the format
     code = (country or DEFAULT_COUNTRY).strip().upper()
@@ -199,17 +564,37 @@ def resolve_tpi(
             f"The earliest {name} observation loaded is "
             f"{format_quarter(earliest // 4, earliest % 4)}."
         )
-    return _build_resolved(by_key[prior[0]], tender_quarter, fallback=True)
+    row = by_key[prior[0]]
+    cpi_bridge = resolve_cpi_bridge(
+        session,
+        country=code,
+        observation_quarter=row.quarter,
+        requested_quarter=tender_quarter,
+        mode=bridge,
+        published_index_value=row.value,
+    )
+    if cpi_bridge.applied:
+        cpi_bridge.bridged_index_value = row.value * cpi_bridge.factor
+    return _build_resolved(row, tender_quarter, fallback=True, bridge=cpi_bridge)
 
 
-def _build_resolved(row: TPISeries, requested_quarter: str, *, fallback: bool) -> ResolvedTPI:
+def _build_resolved(
+    row: TPISeries,
+    requested_quarter: str,
+    *,
+    fallback: bool,
+    bridge: CPIBridge | None = None,
+) -> ResolvedTPI:
+    value = row.value
+    if bridge is not None and bridge.applied:
+        value = row.value * bridge.factor
     return ResolvedTPI(
         country=row.country,
         currency=row.currency,
         series_name=row.series_name,
         requested_quarter=requested_quarter,
         resolved_quarter=row.quarter,
-        value=row.value,
+        value=value,
         base_value=row.base_value or DEFAULT_BASE_YEAR_INDEX_VALUE,
         base_year=row.base_year,
         scope_inclusions=row.scope_inclusions,
@@ -218,6 +603,8 @@ def _build_resolved(row: TPISeries, requested_quarter: str, *, fallback: bool) -
         is_placeholder=row.is_placeholder,
         replace_with=row.replace_with,
         fallback_used=fallback,
+        value_published=row.value,
+        bridge=bridge,
     )
 
 
@@ -355,6 +742,17 @@ class LineResult:
     variance_pct: float | None
     should_cost_amount: float
     variance_amount: float
+    # Overheads and margin: the analyst percentages that turn the benchmark rate
+    # into a FULL cost. Present on every benchmarked line; zero when unused, in
+    # which case full_should_cost_amount == should_cost_amount exactly.
+    full_adjusted_benchmark_rate: float
+    overhead_pct: float
+    margin_pct: float
+    overhead_amount: float
+    margin_amount: float
+    full_should_cost_amount: float
+    overheads_in_tender: bool
+    compared_against_full: bool
     tpi_series_name: str
     tpi_quarter_requested: str
     tpi_quarter_used: str
@@ -363,6 +761,15 @@ class LineResult:
     tpi_base_value: float
     tpi_ratio: float
     tpi_fallback_used: bool
+    # CPI bridge: the modelled step that carried a stale observation forward.
+    tpi_bridged: bool
+    cpi_bridge_factor: float
+    cpi_series_name: str
+    cpi_month_used: str
+    cpi_value_used: float | None
+    cpi_base_value: float | None
+    cpi_source_url: str
+    index_lag_quarters: int
     scope_factor: float
     scope_excluded: bool
     rate_scale_pct: float
@@ -373,6 +780,12 @@ class LineResult:
     basis: str
     flags: list[str] = field(default_factory=list)
     provenance: dict | None = None
+    # The index ratio at full precision. `tpi_ratio` is rounded to 6dp for display,
+    # and the waterfall must not use the rounded value: for an excluded section the
+    # scope factor is 1/exact_ratio, so pairing it with a rounded ratio leaves a
+    # residual proportional to quantity x base_rate x 5e-7 (material on a large BoQ)
+    # that would otherwise land in `unexplained`.
+    tpi_ratio_exact: float = 0.0
 
 
 @dataclass
@@ -395,6 +808,7 @@ class BenchmarkComputation:
     regional_factor_is_placeholder: bool
     regional_factor_source: str
     adjustments_applied: dict
+    index_bridge: dict
     lines: list[LineResult]
     sections: list[dict]
     totals: dict
@@ -413,13 +827,23 @@ def _adjustments_dict(adjustments) -> dict:
             "tpi_scale_pct": 0.0,
             "base_rate_scale_pct": 0.0,
             "section_rate_scale_pct": {},
+            "overhead_pct": 0.0,
+            "margin_pct": 0.0,
+            "overheads_in_tender": True,
             "is_noop": True,
+            "is_noop_excluding_ohp": True,
         }
     raw = adjustments.model_dump() if hasattr(adjustments, "model_dump") else dict(adjustments)
     section_map = {
         str(k): float(v) for k, v in (raw.get("section_rate_scale_pct") or {}).items() if v
     }
-    is_noop = (
+    overhead_pct = float(raw.get("overhead_pct") or 0.0)
+    margin_pct = float(raw.get("margin_pct") or 0.0)
+    # Whether the tendered BoQ rates already carry overheads and profit. It decides
+    # which benchmark rate the variance is measured against; it changes no cost.
+    overheads_in_tender = raw.get("overheads_in_tender")
+    overheads_in_tender = True if overheads_in_tender is None else bool(overheads_in_tender)
+    index_noop = (
         raw.get("tpi_value_override") is None
         and not raw.get("tpi_scale_pct")
         and not raw.get("base_rate_scale_pct")
@@ -430,7 +854,16 @@ def _adjustments_dict(adjustments) -> dict:
         "tpi_scale_pct": float(raw.get("tpi_scale_pct") or 0.0),
         "base_rate_scale_pct": float(raw.get("base_rate_scale_pct") or 0.0),
         "section_rate_scale_pct": section_map,
-        "is_noop": is_noop,
+        "overhead_pct": overhead_pct,
+        "margin_pct": margin_pct,
+        "overheads_in_tender": overheads_in_tender,
+        # `is_noop` covers every analyst input, so a run whose only input is an
+        # overhead percentage is reported as assumed, not derived.
+        "is_noop": index_noop and not overhead_pct and not margin_pct,
+        # Kept separately: the comparison basis only changes when the analyst has
+        # actually supplied overheads or margin.
+        "is_noop_excluding_ohp": index_noop,
+        "ohp_active": bool(overhead_pct or margin_pct),
     }
 
 
@@ -503,16 +936,35 @@ def build_benchmark(
     region_code: str | None = None,
     adjustments=None,
     manual_rates=None,
+    index_bridge: str = BRIDGE_CPI,
 ) -> BenchmarkComputation:
     registry: Country = get_country(country)
     applied = _adjustments_dict(adjustments)
     supplied_rates = _manual_rates_dict(manual_rates)
     applied["manual_rate_count"] = len(supplied_rates)
     region = resolve_region(session, registry.code, region_code)
-    tpi = resolve_tpi(session, tpi_series_name, tender_quarter, country=registry.code)
+    tpi = resolve_tpi(
+        session, tpi_series_name, tender_quarter, country=registry.code, bridge=index_bridge
+    )
     rates = load_benchmark_rates(session, country=registry.code)
     effective_tpi = _effective_tpi_value(tpi.value, applied)
     ratio = tpi.ratio_for(effective_tpi)
+    # The same composition, but starting from the PUBLISHED observation instead of
+    # the bridged one. The difference between the two ratios is exactly the CPI
+    # bridge, which the waterfall reports as its own step. An absolute override
+    # replaces both levels, so it contributes nothing to the bridge step.
+    effective_tpi_published = _effective_tpi_value(tpi.value_published, applied)
+    ratio_published_used = tpi.ratio_for(effective_tpi_published)
+    bridge = tpi.bridge
+    bridged = tpi.bridge_applied
+
+    # Overheads and margin for the whole run. They convert the benchmark cost of the
+    # BENCHMARKED lines into a full cost; lines carried at the tendered rate are left
+    # alone, because that rate already carries the contractor's own OH&P.
+    overhead_pct = float(applied["overhead_pct"])
+    margin_pct = float(applied["margin_pct"])
+    overheads_in_tender = bool(applied["overheads_in_tender"])
+    ohp_applied = bool(overhead_pct or margin_pct)
 
     present_sections = {item.smm2_section for item in items}
     exclusion_hits = excluded_sections(tpi.scope_exclusions, present_sections)
@@ -524,6 +976,85 @@ def build_benchmark(
         warns.append(
             f"No {tpi.series_name} TPI observation is published for {tpi.requested_quarter}. "
             f"The nearest prior quarter, {tpi.resolved_quarter}, was used instead."
+        )
+    if bridged and bridge is not None:
+        through = bridge.covered_through_month
+        detail = (
+            f"Index freshness: the last published {tpi.series_name} observation is "
+            f"{tpi.resolved_quarter}. To price {tpi.requested_quarter} the index was carried "
+            f"forward to {through} using the observed change in the {bridge.series_name} consumer "
+            f"price index between {bridge.from_months[0]}"
+            f"{'-' + bridge.from_months[-1] if len(bridge.from_months) > 1 else ''} "
+            f"({bridge.from_value:.3f}) and {bridge.to_months[0]}"
+            f"{'-' + bridge.to_months[-1] if len(bridge.to_months) > 1 else ''} "
+            f"({bridge.to_value:.3f}) - a factor of {bridge.factor:.4f}. This bridge is a MODELLED "
+            f"step, not a construction cost observation: consumer prices are not construction "
+            f"costs. Every line it touches is basis='assumed' and flagged cpi_bridged, and the "
+            f"step is shown separately in the waterfall."
+        )
+        if bridge.partial:
+            detail += (
+                f" Only {len(bridge.to_months)} of the 3 months in "
+                f"{quarter_of_month(bridge.covered_through_month)} had been published, so the "
+                f"bridge uses the month(s) available."
+            )
+        if bridge.short:
+            detail += (
+                f" The CPI is published only to {through}, which is "
+                f"{bridge.shortfall_months} month(s) short of the end of {tpi.requested_quarter}; "
+                f"the index is therefore current to {through}, not to the quarter end."
+            )
+        if bridge.is_placeholder:
+            detail += (
+                " The CPI series used for the bridge is itself a SYNTHETIC PLACEHOLDER "
+                f"({bridge.replace_with})."
+            )
+        warns.append(detail)
+    elif tpi.fallback_used and (index_bridge or BRIDGE_CPI).strip().lower() != BRIDGE_NONE:
+        reason_text = {
+            "no_cpi_series_configured_for_country": (
+                "No consumer price series is configured for this market"
+            ),
+            "no_cpi_observations_loaded": "No consumer price observations are loaded",
+            "no_cpi_observation_for_the_observation_quarter": (
+                "The consumer price series has no observation for the index quarter"
+            ),
+            "no_cpi_observation_after_the_index_observation": (
+                "The consumer price series has no observation after the index quarter"
+            ),
+            "no_cpi_series_covers_both_quarters": (
+                "No consumer price series loaded for this market spans both the index quarter and "
+                "the tender quarter (the publisher rebased the CPI, so the older and newer series "
+                "do not overlap and are not chained)"
+            ),
+            "cpi_value_at_the_observation_quarter_is_zero": (
+                "The consumer price value at the index quarter is zero"
+            ),
+        }.get(bridge.reason if bridge else "", "The CPI bridge could not be computed")
+        warns.append(
+            f"Index freshness: {reason_text.lower()}, so the {tpi.resolved_quarter} "
+            f"{tpi.series_name} observation was held unchanged for {tpi.requested_quarter} "
+            f"instead of being carried forward. The index is therefore stale by "
+            f"{tpi.lag_quarters} quarter(s). Load a monthly CPI series for this market "
+            f"(python -m app.importer --kind cpi) to bridge it."
+        )
+    if (index_bridge or BRIDGE_CPI).strip().lower() == BRIDGE_NONE and tpi.lag_quarters > 0:
+        warns.append(
+            f"Index freshness: the CPI bridge is switched OFF for this run. The "
+            f"{tpi.resolved_quarter} {tpi.series_name} observation was held unchanged for "
+            f"{tpi.requested_quarter} ({tpi.lag_quarters} quarter(s) stale)."
+        )
+    if bridged:
+        assumes.append(
+            f"ASSUMED (modelled): the {tpi.series_name} index for {tpi.requested_quarter} is not a "
+            f"published observation. It is the last published observation "
+            f"({tpi.resolved_quarter} = {tpi.value_published:.4f}) scaled by the observed change "
+            f"in {bridge.series_name} ({bridge.base_year} = {bridge.base_value:.0f}) from "
+            f"{bridge.from_value:.4f} to {bridge.to_value:.4f}, giving "
+            f"{tpi.value:.4f} ({bridge.factor:+.4f} factor). Source of the CPI: "
+            f"{bridge.source_url or 'not stated'}. Consumer prices are not construction costs, so "
+            f"this step is an assumption, not evidence. TODO: replace with the published "
+            f"{tpi.series_name} observation for {tpi.requested_quarter} when it is released."
         )
     if tpi.is_placeholder:
         warns.append(
@@ -647,17 +1178,36 @@ def build_benchmark(
                     variance_abs=None,
                     variance_pct=None,
                     # No benchmark evidence exists, so should-cost is held at the
-                    # tendered rate and contributes zero tested variance.
+                    # tendered rate and contributes zero tested variance. Overheads
+                    # and margin are deliberately NOT added here: the tendered rate
+                    # already carries the contractor's own OH&P, and grossing it up
+                    # again would double-count them.
                     should_cost_amount=boq_amount,
                     variance_amount=0.0,
+                    full_adjusted_benchmark_rate=None,
+                    overhead_pct=0.0,
+                    margin_pct=0.0,
+                    overhead_amount=0.0,
+                    margin_amount=0.0,
+                    full_should_cost_amount=boq_amount,
+                    overheads_in_tender=overheads_in_tender,
+                    compared_against_full=False,
                     tpi_series_name=tpi.series_name,
                     tpi_quarter_requested=tpi.requested_quarter,
                     tpi_quarter_used=tpi.resolved_quarter,
                     tpi_value=round(effective_tpi, 4),
-                    tpi_value_published=round(tpi.value, 4),
+                    tpi_value_published=round(tpi.value_published, 4),
                     tpi_base_value=tpi.base_value,
                     tpi_ratio=round(ratio, 6),
                     tpi_fallback_used=tpi.fallback_used,
+                    tpi_bridged=bridged,
+                    cpi_bridge_factor=round(tpi.bridge_factor, 6),
+                    cpi_series_name=(bridge.series_name if bridged and bridge else ""),
+                    cpi_month_used=(bridge.covered_through_month or "") if bridged and bridge else "",
+                    cpi_value_used=(round(bridge.to_value, 4) if bridged and bridge else None),
+                    cpi_base_value=(bridge.base_value if bridged and bridge else None),
+                    cpi_source_url=(bridge.source_url if bridged and bridge else ""),
+                    index_lag_quarters=tpi.lag_quarters,
                     scope_factor=1.0,
                     scope_excluded=False,
                     rate_scale_pct=0.0,
@@ -704,8 +1254,28 @@ def build_benchmark(
                 flags.append("scope_excluded")
             adjusted_base_rate = rate_row.base_rate * region.factor * (1.0 + section_scale / 100.0)
             adjusted = adjusted_base_rate * ratio * scope_factor
-        variance_abs_raw = item.boq_rate - adjusted
-        variance_pct_raw = (variance_abs_raw / adjusted * 100.0) if adjusted else None
+
+        # ---------------------------------------------------- overheads & margin --
+        # Analyst-supplied percentages that turn a benchmark RATE into a FULL cost:
+        #
+        #     full_rate = adjusted_rate x (1 + overhead_pct/100) x (1 + margin_pct/100)
+        #
+        # Margin is applied AFTER overheads, i.e. it is compounded on them, which is
+        # the usual commercial convention and is stated in assumptions[]. Neither is
+        # evidence, so any line they touch is basis="assumed".
+        quantity = item.quantity
+        overhead_amount = adjusted * quantity * overhead_pct / 100.0
+        margin_base = adjusted * quantity + overhead_amount
+        margin_amount = margin_base * margin_pct / 100.0
+        full_adjusted = adjusted * (1.0 + overhead_pct / 100.0) * (1.0 + margin_pct / 100.0)
+        ohp_applied = bool(overhead_pct or margin_pct)
+        # Which rate the tendered BoQ rate is compared against. A BoQ rate normally
+        # already carries overheads and profit, so the default is a full-to-full
+        # comparison; an analyst who knows their tender excludes them can say so.
+        compare_against = full_adjusted if (ohp_applied and overheads_in_tender) else adjusted
+
+        variance_abs_raw = item.boq_rate - compare_against
+        variance_pct_raw = (variance_abs_raw / compare_against * 100.0) if compare_against else None
 
         if variance_pct_raw is not None:
             if variance_pct_raw >= variance_threshold:
@@ -717,9 +1287,17 @@ def build_benchmark(
 
         if manual is None and rate_row is not None and rate_row.is_placeholder:
             flags.append("placeholder_benchmark_rate")
+        if bridged:
+            flags.append("cpi_bridged")
+        if overhead_pct:
+            flags.append("overhead_applied")
+        if margin_pct:
+            flags.append("margin_applied")
 
         # A regional multiplier is a modelling input, not an observation, so any
-        # line it touches is basis="assumed" - exactly like a manual adjuster.
+        # line it touches is basis="assumed" - exactly like a manual adjuster. A
+        # CPI bridge is modelled too: the index value at the tender quarter is not
+        # a published construction cost observation. So are overheads and margin.
         user_adjusted = (
             manual is not None
             or bool(section_scale)
@@ -730,9 +1308,9 @@ def build_benchmark(
         if user_adjusted:
             flags.append("user_adjusted")
 
-        quantity = item.quantity
         boq_amount = round(quantity * item.boq_rate, 2)
         should_cost_amount = round(quantity * adjusted, 2)
+        full_should_cost_amount = round(quantity * full_adjusted, 2)
         lines.append(
             LineResult(
                 item_id=item.id,
@@ -751,14 +1329,32 @@ def build_benchmark(
                 variance_pct=round(variance_pct_raw, 2) if variance_pct_raw is not None else None,
                 should_cost_amount=should_cost_amount,
                 variance_amount=round(boq_amount - should_cost_amount, 2),
+                full_adjusted_benchmark_rate=round(full_adjusted, 2),
+                overhead_pct=round(overhead_pct, 4),
+                margin_pct=round(margin_pct, 4),
+                overhead_amount=round(overhead_amount, 2),
+                margin_amount=round(margin_amount, 2),
+                full_should_cost_amount=full_should_cost_amount,
+                overheads_in_tender=overheads_in_tender,
+                compared_against_full=bool(ohp_applied and overheads_in_tender),
                 tpi_series_name=tpi.series_name,
                 tpi_quarter_requested=tpi.requested_quarter,
                 tpi_quarter_used=tpi.resolved_quarter,
                 tpi_value=round(effective_tpi, 4),
-                tpi_value_published=round(tpi.value, 4),
+                tpi_value_published=round(tpi.value_published, 4),
                 tpi_base_value=tpi.base_value,
                 tpi_ratio=round(ratio, 6),
+                # Full precision for the waterfall; see the LineResult docstring.
+                tpi_ratio_exact=ratio,
                 tpi_fallback_used=tpi.fallback_used,
+                tpi_bridged=bridged,
+                cpi_bridge_factor=round(tpi.bridge_factor, 6),
+                cpi_series_name=(bridge.series_name if bridged and bridge else ""),
+                cpi_month_used=(bridge.covered_through_month or "") if bridged and bridge else "",
+                cpi_value_used=(round(bridge.to_value, 4) if bridged and bridge else None),
+                cpi_base_value=(bridge.base_value if bridged and bridge else None),
+                cpi_source_url=(bridge.source_url if bridged and bridge else ""),
+                index_lag_quarters=tpi.lag_quarters,
                 # Reported at full precision: rounding here breaks the exact
                 # market-risk/scope cancellation for excluded sections.
                 scope_factor=scope_factor,
@@ -769,7 +1365,7 @@ def build_benchmark(
                 # Whether the rate actually came from the published library.
                 from_library=manual is None,
                 user_adjusted=user_adjusted,
-                basis=BASIS_ASSUMED if user_adjusted else BASIS_DERIVED,
+                basis=BASIS_ASSUMED if (user_adjusted or bridged or ohp_applied) else BASIS_DERIVED,
                 flags=flags,
                 provenance=(
                     {
@@ -808,9 +1404,26 @@ def build_benchmark(
     benchmarked_boq_total = round(sum(l.boq_amount for l in lines if l.is_benchmarked), 2)
     unbenchmarked_lines = [l for l in lines if not l.is_benchmarked]
     unbenchmarked_boq_total = round(sum(l.boq_amount for l in unbenchmarked_lines), 2)
-    total_variance_abs = round(boq_total - should_cost_total, 2)
+    # The FULL cost: benchmark cost of the benchmarked lines grossed up by the
+    # analyst's overhead and margin percentages, plus the unbenchmarked lines at the
+    # tendered rate (which already carries OH&P). Equal to should_cost_total when no
+    # percentages were supplied.
+    overhead_total = round(sum(l.overhead_amount for l in lines), 2)
+    margin_total = round(sum(l.margin_amount for l in lines), 2)
+    full_should_cost_total = round(sum(l.full_should_cost_amount for l in lines), 2)
+    # Headline variance follows the SAME basis as the per-line variances: a
+    # full-to-full comparison when the analyst says the tender carries OH&P, and the
+    # benchmark cost when they say it does not. Without OH&P the two are identical.
+    comparison_total = (
+        full_should_cost_total if (ohp_applied and overheads_in_tender) else should_cost_total
+    )
+    total_variance_abs = round(boq_total - comparison_total, 2)
     total_variance_pct = (
-        round(total_variance_abs / should_cost_total * 100.0, 2) if should_cost_total else None
+        round(total_variance_abs / comparison_total * 100.0, 2) if comparison_total else None
+    )
+    full_variance_abs = round(boq_total - full_should_cost_total, 2)
+    full_variance_pct = (
+        round(full_variance_abs / full_should_cost_total * 100.0, 2) if full_should_cost_total else None
     )
     breached = [l for l in lines if "over_threshold" in l.flags or "under_threshold" in l.flags]
 
@@ -822,8 +1435,10 @@ def build_benchmark(
         members = [l for l in lines if l.smm2_section == name]
         sec_boq = round(sum(m.boq_amount for m in members), 2)
         sec_should = round(sum(m.should_cost_amount for m in members), 2)
+        sec_full = round(sum(m.full_should_cost_amount for m in members), 2)
         sec_var = round(sec_boq - sec_should, 2)
         sec_pct = round(sec_var / sec_should * 100.0, 2) if sec_should else None
+        sec_full_var = round(sec_boq - sec_full, 2)
         benchmarked = [m for m in members if m.is_benchmarked]
         sections.append(
             {
@@ -832,10 +1447,21 @@ def build_benchmark(
                 "benchmarked_item_count": len(benchmarked),
                 "boq_amount": sec_boq,
                 "should_cost_amount": sec_should,
+                "full_should_cost_amount": sec_full,
+                "overhead_amount": round(sum(m.overhead_amount for m in members), 2),
+                "margin_amount": round(sum(m.margin_amount for m in members), 2),
+                "full_variance_amount": sec_full_var,
+                "full_variance_pct": (
+                    round(sec_full_var / sec_full * 100.0, 2) if sec_full else None
+                ),
                 "variance_amount": sec_var,
                 "variance_abs": sec_var,
                 "variance_pct": sec_pct,
-                "basis": BASIS_DERIVED if (benchmarked and not any_user_adjusted) else BASIS_ASSUMED,
+                "basis": (
+                    BASIS_DERIVED
+                    if (benchmarked and not any_user_adjusted and not bridged and not ohp_applied)
+                    else BASIS_ASSUMED
+                ),
                 "breaches_threshold": any(
                     "over_threshold" in m.flags or "under_threshold" in m.flags for m in members
                 ),
@@ -843,7 +1469,9 @@ def build_benchmark(
         )
 
     # ------------------------------------------------------------- waterfall --
-    waterfall = _build_waterfall(lines, boq_total, should_cost_total)
+    waterfall = _build_waterfall(
+        lines, boq_total, should_cost_total, full_should_cost_total, ratio_published_used
+    )
 
     # ------------------------------------------------------ warnings/assumes --
     unclassified = [l for l in lines if l.smm2_section == UNCLASSIFIED]
@@ -872,6 +1500,48 @@ def build_benchmark(
             f"equal to the tendered BoQ rate, so they contribute zero tested variance. Their cost "
             f"is carried but NOT validated."
         )
+
+    # ------------------------------------------------------- overheads & margin --
+    if ohp_applied:
+        currency_code = registry.currency
+        assumes.append(
+            f"ASSUMED: the analyst added {overhead_pct:.2f}% overheads and {margin_pct:.2f}% margin "
+            f"on top of the benchmark cost, giving a FULL should-cost of {currency_code} "
+            f"{full_should_cost_total:,.2f} against a benchmark cost of {currency_code} "
+            f"{should_cost_total:,.2f} (overheads {currency_code} {overhead_total:,.2f} + margin "
+            f"{currency_code} {margin_total:,.2f}). Margin is applied AFTER overheads, i.e. it is "
+            f"compounded on them. Neither percentage is a published observation: they are commercial "
+            f"inputs, so every benchmarked line is basis='assumed' and flagged overhead_applied / "
+            f"margin_applied, and the two steps appear as their own bars in the waterfall."
+        )
+        assumes.append(
+            "ASSUMED: the overhead and margin percentages are a SINGLE blended pair for the whole "
+            "BoQ. They are not differentiated by trade: preliminaries-heavy and M&E sections "
+            "typically carry different overhead recovery from structural work. Split them per "
+            "section if the estimate needs that resolution."
+        )
+        assumes.append(
+            "ASSUMED: overheads and margin are added to the BENCHMARKED lines only. Lines carried "
+            "at the tendered rate (unclassified, unit mismatch, no library rate) are not grossed up, "
+            "because that rate already includes the contractor's own OH&P - doing so would "
+            "double-count it."
+        )
+        if overheads_in_tender:
+            assumes.append(
+                "ASSUMED: the tendered BoQ rates are taken to ALREADY INCLUDE overheads and profit, "
+                "so each line's variance is measured full-to-full (tendered rate against the "
+                "benchmark rate grossed up by the same percentages). Set 'overheads_in_tender' to "
+                "false if the tender rates are net of OH&P, and the comparison reverts to the "
+                "benchmark rate before overheads."
+            )
+        else:
+            warns.append(
+                "Overheads and margin are ADDED to the full should-cost but EXCLUDED from the "
+                "variance test, because this run declares that the tendered BoQ rates do not carry "
+                "OH&P. The full should-cost and the benchmark cost therefore differ by "
+                f"{currency_code} {full_should_cost_total - should_cost_total:,.2f}; read the "
+                f"full_should_cost_* figures for the commercial total."
+            )
     if any(l.is_benchmarked for l in lines) and abs(waterfall[2]["amount"]) + abs(waterfall[3]["amount"]) > 0:
         assumes.append(
             f"ASSUMED: the rate gap between the tendered BoQ rate and the base-year benchmark "
@@ -897,6 +1567,46 @@ def build_benchmark(
             f"tender decision."
         )
 
+    index_bridge_summary = (
+        bridge.as_dict()
+        if bridge is not None
+        else {
+            "applied": False,
+            "reason": "index_observation_covers_requested_quarter",
+            "mode": (
+                BRIDGE_CPI
+                if (index_bridge or BRIDGE_CPI).strip().lower() != BRIDGE_NONE
+                else BRIDGE_NONE
+            ),
+            "series_name": tpi.series_name,
+            "requested_quarter": tender_quarter,
+            "observation_quarter": tpi.resolved_quarter,
+            "lag_quarters": 0,
+            "bridged_to_quarter": None,
+            "bridged_through_month": None,
+            "shortfall_months": 0,
+            "partial_quarter": False,
+            "cpi_series_name": registry.default_cpi_series,
+            "cpi_base_year": None,
+            "cpi_base_value": None,
+            "cpi_from_value": None,
+            "cpi_from_months": [],
+            "cpi_to_value": None,
+            "cpi_to_months": [],
+            "cpi_bridge_factor": 1.0,
+            "cpi_source_url": "",
+            "cpi_is_placeholder": False,
+            "cpi_provenance_note": "",
+            "index_value_published": round(tpi.value_published, 4),
+            "index_value_bridged": round(tpi.value, 4),
+        }
+    )
+    index_bridge_summary["index_series"] = tpi.series_name
+    index_bridge_summary["requested_bridge_mode"] = (
+        BRIDGE_CPI if (index_bridge or BRIDGE_CPI).strip().lower() != BRIDGE_NONE else BRIDGE_NONE
+    )
+    index_bridge_summary["index_observation_is_placeholder"] = tpi.is_placeholder
+
     return BenchmarkComputation(
         upload_id=upload_id,
         country=registry.code,
@@ -916,6 +1626,7 @@ def build_benchmark(
         regional_factor_is_placeholder=region.is_placeholder,
         regional_factor_source=region.source,
         adjustments_applied=applied,
+        index_bridge=index_bridge_summary,
         lines=lines,
         sections=sections,
         totals={
@@ -928,7 +1639,33 @@ def build_benchmark(
             "unbenchmarked_line_count": len(unbenchmarked_lines),
             "line_count": len(lines),
             "breached_line_count": len(breached),
-            "basis": BASIS_ASSUMED if applied["is_noop"] is False else BASIS_DERIVED,
+            # Overheads and margin: the analyst inputs and the full cost they produce.
+            "overhead_pct": round(overhead_pct, 4),
+            "margin_pct": round(margin_pct, 4),
+            "overheads_in_tender": overheads_in_tender,
+            "overhead_amount_total": overhead_total,
+            "margin_amount_total": margin_total,
+            "full_should_cost_total": full_should_cost_total,
+            "full_variance_abs": full_variance_abs,
+            "full_variance_pct": full_variance_pct,
+            # What the headline variance was measured against: the full cost, or the
+            # benchmark cost before overheads. Same basis as the per-line variances.
+            "variance_basis_total": comparison_total,
+            "variance_basis": (
+                "full_including_overheads"
+                if (ohp_applied and overheads_in_tender)
+                else "benchmark_before_overheads"
+            ),
+            # Whether the index actually used for the tender quarter is a published
+            # observation (derived), or was carried forward with the CPI (assumed).
+            "index_bridge_applied": bool(index_bridge_summary["applied"]),
+            "index_lag_quarters": index_bridge_summary["lag_quarters"],
+            "index_bridged_lines": sum(1 for l in lines if l.tpi_bridged),
+            "basis": (
+                BASIS_DERIVED
+                if (applied["is_noop"] and not index_bridge_summary["applied"])
+                else BASIS_ASSUMED
+            ),
         },
         waterfall=waterfall,
         warnings=warns,
@@ -949,20 +1686,53 @@ def _section_sort_key(name: str) -> tuple[int, str]:
         return (len(_SECTION_ORDER), name)
 
 
-def _build_waterfall(lines: list[LineResult], boq_total: float, should_cost_total: float) -> list[dict]:
-    """Reconcile boq_total to should_cost_total.
+def _build_waterfall(
+    lines: list[LineResult],
+    boq_total: float,
+    should_cost_total: float,
+    full_should_cost_total: float | None = None,
+    ratio_published_used: float | None = None,
+) -> list[dict]:
+    """Reconcile boq_total to the FULL should-cost total.
 
-    Identity: boq_total + material + labour + market_risk + scope + unexplained
-              == should_cost_total
+    Identity: boq_total + material + labour + market_risk + cpi_bridge + scope
+              + overhead + margin + unexplained == full_should_cost_total
+
+    `full_should_cost_total` equals `should_cost_total` whenever no overhead or margin
+    percentages were supplied, and the two extra steps are then exactly zero, so a run
+    without them is numerically identical to before.
+
+    `market_risk` is the movement in the PUBLISHED index observation between the
+    benchmark base year and the quarter the series last published. `cpi_bridge` is
+    the modelled step that carries that observation forward to the tender quarter.
+    The two always sum to the same figure the single market_risk term used to
+    carry, so a run with no bridge is numerically identical to before.
     """
     matched = [l for l in lines if l.is_benchmarked]
+    full_total = should_cost_total if full_should_cost_total is None else full_should_cost_total
 
-    market_risk = round(
-        sum(l.quantity * l.benchmark_base_rate * (l.tpi_ratio - 1.0) for l in matched), 2
+    def ratio_of(line) -> float:
+        """The index ratio at full precision (never the rounded display value)."""
+        return line.tpi_ratio_exact or line.tpi_ratio
+
+    combined_raw = sum(
+        l.quantity * l.benchmark_base_rate * (ratio_of(l) - 1.0) for l in matched
     )
+    market_risk = round(
+        sum(
+            l.quantity
+            * l.benchmark_base_rate
+            * ((ratio_published_used if ratio_published_used is not None else ratio_of(l)) - 1.0)
+            for l in matched
+        ),
+        2,
+    )
+    # Rounded as the difference of the same total, so market_risk + cpi_bridge is
+    # exactly the value the pre-bridge engine reported for market_risk.
+    cpi_bridge = round(combined_raw, 2) - market_risk
     scope = round(
         sum(
-            l.quantity * l.benchmark_base_rate * l.tpi_ratio * (l.scope_factor - 1.0)
+            l.quantity * l.benchmark_base_rate * ratio_of(l) * (l.scope_factor - 1.0)
             for l in matched
         ),
         2,
@@ -970,7 +1740,22 @@ def _build_waterfall(lines: list[LineResult], boq_total: float, should_cost_tota
     rate_gap = sum(l.quantity * (l.benchmark_base_rate - l.boq_rate) for l in matched)
     material = round(rate_gap * MATERIAL_SHARE, 2)
     labour = round(rate_gap * LABOUR_SHARE, 2)
-    unexplained = round(should_cost_total - boq_total - material - labour - market_risk - scope, 2)
+    # Overheads and margin are additive and computed from the benchmarked cost only,
+    # so they bridge should_cost_total to the full total exactly.
+    overhead = round(sum(l.overhead_amount for l in matched), 2)
+    margin = round(sum(l.margin_amount for l in matched), 2)
+    unexplained = round(
+        full_total
+        - boq_total
+        - material
+        - labour
+        - market_risk
+        - cpi_bridge
+        - scope
+        - overhead
+        - margin,
+        2,
+    )
 
     return [
         {
@@ -997,10 +1782,24 @@ def _build_waterfall(lines: list[LineResult], boq_total: float, should_cost_tota
             "component": "market_risk",
             "amount": market_risk,
             "basis": BASIS_DERIVED,
-            "method": "sum(quantity x base_rate x (tpi_ratio - 1))",
+            "method": "sum(quantity x base_rate x (published_tpi_ratio - 1))",
             "justification": (
-                "Price movement between the benchmark base year and the tender quarter, derived "
-                "from the selected index series. Indexed sections only."
+                "Price movement between the benchmark base year and the last PUBLISHED quarter of "
+                "the selected index series, derived from that series. Indexed sections only. The "
+                "analyst's own index shift (if any) is carried here too."
+            ),
+        },
+        {
+            "component": "cpi_bridge",
+            "amount": cpi_bridge,
+            "basis": BASIS_ASSUMED,
+            "method": "sum(quantity x base_rate x (index_ratio_used - published_tpi_ratio))",
+            "justification": (
+                "Modelled step that carries the last published index observation forward to the "
+                "tender quarter, using the observed change in the national consumer price index. "
+                "Consumer prices are not construction costs, so this step is an assumption, not "
+                "evidence. Zero when the index observation already covers the tender quarter or "
+                "when the analyst switched the bridge off."
             ),
         },
         {
@@ -1015,10 +1814,36 @@ def _build_waterfall(lines: list[LineResult], boq_total: float, should_cost_tota
             ),
         },
         {
+            "component": "overhead",
+            "amount": overhead,
+            "basis": BASIS_ASSUMED,
+            "method": "sum(quantity x adjusted_rate) x overhead_pct/100",
+            "justification": (
+                "Analyst-supplied overhead percentage applied to the benchmark cost of the "
+                "benchmarked lines. Site and head-office overheads are a commercial input, not a "
+                "published observation. Zero when no percentage was supplied. Unbenchmarked lines "
+                "are excluded, because they are carried at the tendered rate, which already "
+                "includes the contractor's own overheads."
+            ),
+        },
+        {
+            "component": "margin",
+            "amount": margin,
+            "basis": BASIS_ASSUMED,
+            "method": "(sum(quantity x adjusted_rate) + overhead) x margin_pct/100",
+            "justification": (
+                "Analyst-supplied profit margin, applied AFTER overheads (compounded) in the usual "
+                "commercial convention. Not an observation. Zero when no percentage was supplied."
+            ),
+        },
+        {
             "component": "unexplained",
             "amount": unexplained,
             "basis": BASIS_DERIVED,
-            "method": "should_cost_total - boq_total - (material + labour + market_risk + scope)",
+            "method": (
+                "full_should_cost_total - boq_total - (material + labour + market_risk "
+                "+ cpi_bridge + scope + overhead + margin)"
+            ),
             "justification": (
                 "Residual that closes the identity exactly so the chart reconciles to the cent. "
                 "Expected to be ~0.00 when every line is benchmarked; a material residual means "
@@ -1047,6 +1872,7 @@ def compute_sensitivity(
     region_code: str | None = None,
     adjustments=None,
     manual_rates=None,
+    index_bridge: str = BRIDGE_CPI,
 ) -> dict:
     """Sweep the index value and each section's rate, and report the effect.
 
@@ -1056,8 +1882,11 @@ def compute_sensitivity(
     registry = get_country(country)
     applied = _adjustments_dict(adjustments)
     # Resolve the published observation once; every scenario is derived from it.
-    resolved = resolve_tpi(session, tpi_series_name, tender_quarter, country=registry.code)
-    published_tpi = resolved.value
+    resolved = resolve_tpi(
+        session, tpi_series_name, tender_quarter, country=registry.code, bridge=index_bridge
+    )
+    published_tpi = resolved.value_published
+    bridged_tpi = resolved.value
 
     if tpi_scale_max_pct < tpi_scale_min_pct:
         raise ValueError(
@@ -1084,6 +1913,7 @@ def compute_sensitivity(
         region_code=region_code,
         adjustments=adjustments,
         manual_rates=manual_rates,
+        index_bridge=index_bridge,
     )
 
     def run_with(tpi_scale: float, section: str | None, delta_pct: float) -> BenchmarkComputation:
@@ -1095,6 +1925,11 @@ def compute_sensitivity(
             "tpi_scale_pct": applied["tpi_scale_pct"] + tpi_scale,
             "base_rate_scale_pct": applied["base_rate_scale_pct"],
             "section_rate_scale_pct": section_map,
+            # The overheads and margin inputs ride along, so every sweep point is a
+            # FULL should-cost on the same commercial assumptions as the headline run.
+            "overhead_pct": applied["overhead_pct"],
+            "margin_pct": applied["margin_pct"],
+            "overheads_in_tender": applied["overheads_in_tender"],
         }
         return build_benchmark(
             session,
@@ -1108,11 +1943,12 @@ def compute_sensitivity(
             region_code=region_code,
             adjustments=merged,
             manual_rates=manual_rates,
+            index_bridge=index_bridge,
         )
 
     def scenario_tpi_value(scale_pct: float) -> float:
         return _effective_tpi_value(
-            published_tpi,
+            bridged_tpi,
             {**applied, "tpi_scale_pct": applied["tpi_scale_pct"] + scale_pct},
         )
 
@@ -1183,9 +2019,10 @@ def compute_sensitivity(
     assumptions = list(base.assumptions)
     assumptions.append(
         f"ASSUMED: the sensitivity sweep varies the index by up to "
-        f"{max(abs(tpi_scale_min_pct), abs(tpi_scale_max_pct)):.1f}% around the published value "
-        f"and each section's rate by +/-{section_scale_pct:.1f}% in isolation. These are scenario "
-        f"inputs chosen to bracket plausible outcomes, not forecasts."
+        f"{max(abs(tpi_scale_min_pct), abs(tpi_scale_max_pct)):.1f}% around the "
+        f"{'bridged' if resolved.bridge_applied else 'published'} value "
+        f"({bridged_tpi:.4f}) and each section's rate by +/-{section_scale_pct:.1f}% in isolation. "
+        f"These are scenario inputs chosen to bracket plausible outcomes, not forecasts."
     )
     assumptions.append(
         "ASSUMED: the break-even point is the index shift at which should-cost equals the "
@@ -1206,6 +2043,8 @@ def compute_sensitivity(
         "variance_threshold": variance_threshold,
         "section_scale_pct": section_scale_pct,
         "baseline_tpi_value": round(scenario_tpi_value(0.0), 4),
+        "baseline_tpi_value_published": round(published_tpi, 4),
+        "index_bridge": base.index_bridge,
         "baseline": base.totals,
         "break_even_scale_pct": break_even_scale_pct,
         "break_even_tpi_value": break_even_tpi_value,

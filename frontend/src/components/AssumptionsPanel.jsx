@@ -1,27 +1,89 @@
-import React from 'react'
+import React, { useCallback, useEffect, useState } from 'react'
 import { BASIS_LABEL, BASIS_HELP } from '../format.js'
 
+const STORAGE_KEY = 'shouldcost.assumptions-panel.collapsed'
+
+function readStoredCollapsed() {
+  try {
+    return window.localStorage.getItem(STORAGE_KEY) === '1'
+  } catch (error) {
+    return false
+  }
+}
+
 /**
- * Renders warnings[] and assumptions[] prominently above the fold.
+ * Renders warnings[], assumptions[] and the data-quality notices above the fold.
  *
- * Hard rule 6 requires apportioned figures to be shown to the user as visible
- * text, never hidden in a tooltip. This panel is deliberately not collapsible
- * when there is anything to say.
+ * The panel is COLLAPSIBLE at the user's request, and remembers the choice, so a
+ * returning analyst who already knows what the warnings say is not made to scroll
+ * past them on every re-run. Collapsing is never silent: the header keeps a live
+ * count of warnings and assumptions, and the amber "index bridged", "placeholder
+ * data" and "index adjusters active" chips stay visible in the collapsed strip, so
+ * an assumed figure can never be mistaken for a measured one.
+ *
+ * Each list also collapses on its own, so the warnings can be folded away while
+ * the assumptions stay open, or the other way round.
  */
 export default function AssumptionsPanel(props) {
   const warnings = props.warnings || []
   const assumptions = props.assumptions || []
   const placeholderLines = props.placeholderLineCount || 0
   const adjustmentsActive = props.adjustmentsActive === true
+  const indexBridge = props.indexBridge || null
+  const bridgeApplied = !!(indexBridge && indexBridge.applied)
+
+  const [collapsed, setCollapsed] = useState(readStoredCollapsed)
+  const [warningsOpen, setWarningsOpen] = useState(true)
+  const [assumptionsOpen, setAssumptionsOpen] = useState(true)
+
+  useEffect(function () {
+    try {
+      window.localStorage.setItem(STORAGE_KEY, collapsed ? '1' : '0')
+    } catch (error) {
+      /* private mode, or storage disabled - the panel still works */
+    }
+  }, [collapsed])
+
+  const toggle = useCallback(function () { setCollapsed(function (current) { return !current }) }, [])
 
   if (!warnings.length && !assumptions.length && !placeholderLines) {
     return null
   }
 
+  const chips = []
+  if (placeholderLines > 0) {
+    chips.push({ key: 'placeholder', label: placeholderLines + ' placeholder line(s)', tone: 'basis-assumed' })
+  }
+  if (bridgeApplied) {
+    chips.push({
+      key: 'bridge',
+      label: 'index bridged with CPI'
+        + (indexBridge.bridged_through_month ? ' to ' + indexBridge.bridged_through_month : ''),
+      tone: 'basis-assumed',
+    })
+  }
+  if (adjustmentsActive) {
+    chips.push({ key: 'adjusters', label: 'index adjusters active', tone: 'basis-assumed' })
+  }
+
   return (
     <section className="assumptions-panel" aria-label="Assumptions and warnings">
       <div className="assumptions-head">
-        <h2>Assumptions &amp; warnings</h2>
+        <h2>
+          Assumptions &amp; warnings
+          <span className="h2-actions">
+            <button
+              type="button"
+              className="secondary small-btn"
+              onClick={toggle}
+              aria-expanded={!collapsed}
+              aria-controls="assumptions-body"
+            >
+              <span className="chev">{collapsed ? '\u25B6' : '\u25BC'}</span>
+              {collapsed ? 'Expand' : 'Collapse'}
+            </button>
+          </span>
+        </h2>
         <p className="muted">
           Figures in this app are tagged <strong>measured</strong>, <strong>derived</strong> or{" "}
           <strong>assumed</strong>. Nothing apportioned is ever presented as measured.
@@ -34,48 +96,156 @@ export default function AssumptionsPanel(props) {
               </span>
             )
           })}
+          <span className="muted small">
+            {warnings.length} warning(s), {assumptions.length} assumption(s) on this run
+          </span>
         </div>
       </div>
 
-      {placeholderLines > 0 && (
-        <div className="notice notice-critical">
-          <strong>Placeholder data in this run.</strong> {placeholderLines} benchmark line(s) are
-          flagged <code>is_placeholder: true</code>. The bundled index values and benchmark rates
-          are SYNTHETIC and must not be used for a real tender decision. Every placeholder row
-          carries a source_url and a <code># TODO: replace with actual ...</code> marker.
+      {collapsed ? (
+        <div className="assumptions-strip">
+          <span className="muted small">
+            Collapsed - the full text is one click away.
+          </span>
+          {chips.map(function (chip) {
+            return (
+              <span key={chip.key} className={'badge ' + chip.tone} title="Expand the panel to read the full text">
+                {chip.label}
+              </span>
+            )
+          })}
+          <button type="button" className="linkish small" onClick={toggle}>
+            Show {warnings.length} warning(s) and {assumptions.length} assumption(s)
+          </button>
         </div>
-      )}
+      ) : (
+        <div id="assumptions-body">
+          {placeholderLines > 0 && (
+            <div className="notice notice-critical">
+              <strong>Placeholder data in this run.</strong> {placeholderLines} benchmark line(s) are
+              flagged <code>is_placeholder: true</code>. The bundled index values and benchmark rates
+              are SYNTHETIC and must not be used for a real tender decision. Every placeholder row
+              carries a source_url and a <code># TODO: replace with actual ...</code> marker.
+            </div>
+          )}
 
-      {adjustmentsActive ? (
-        <div className="notice notice-warn">
-          <strong>Index adjusters are active.</strong> Some rates on screen were moved by a manual
-          adjustment rather than by a published index. Every affected line is tagged{' '}
-          <code>basis: assumed</code> and flagged <em>index adjusted</em>, and each adjustment is
-          restated in full below.
-        </div>
-      ) : null}
+          {bridgeApplied && indexBridge && (
+            <div className="notice notice-warn">
+              <strong>Index bridged with the consumer price index.</strong> The{' '}
+              <code>{indexBridge.index_series}</code> series has no published observation for{' '}
+              <code>{indexBridge.requested_quarter}</code>; its last observation is{' '}
+              <code>{indexBridge.observation_quarter}</code> ({indexBridge.lag_quarters} quarter(s)
+              earlier). The index used is that observation scaled by the observed change in{' '}
+              <code>{indexBridge.cpi_series_name}</code> from{' '}
+              {formatMonths(indexBridge.cpi_from_months)} ({fmt(indexBridge.cpi_from_value)}) to{' '}
+              {formatMonths(indexBridge.cpi_to_months)} ({fmt(indexBridge.cpi_to_value)}) - a factor
+              of <strong>{fmt(indexBridge.cpi_bridge_factor, 4)}</strong>, giving{' '}
+              <strong>{fmt(indexBridge.index_value_used, 4)}</strong> from a published{' '}
+              {fmt(indexBridge.index_value_published, 4)}. Consumer prices are not construction
+              costs, so every bridged line is <code>basis: assumed</code>, flagged{' '}
+              <em>CPI-bridged</em>, and the step is shown separately in the waterfall.
+              {indexBridge.shortfall_months > 0
+                ? ' The CPI is published only to ' + indexBridge.bridged_through_month + ', so the index is current to that month, not to the quarter end.'
+                : ''}
+              {indexBridge.cpi_is_placeholder
+                ? ' The CPI series itself is still a synthetic placeholder.'
+                : ''}
+            </div>
+          )}
 
-      {warnings.length > 0 && (
-        <div className="assumptions-block">
-          <h3>Warnings ({warnings.length})</h3>
-          <ul className="warning-list">
-            {warnings.map(function (text, index) {
-              return <li key={'w' + index}>{text}</li>
-            })}
-          </ul>
-        </div>
-      )}
+          {!bridgeApplied && indexBridge && indexBridge.lag_quarters > 0 && (
+            <div className="notice notice-info">
+              <strong>Index is stale on this run.</strong> The{' '}
+              <code>{indexBridge.index_series}</code> observation for{' '}
+              <code>{indexBridge.observation_quarter}</code> is {indexBridge.lag_quarters}{' '}
+              quarter(s) earlier than {indexBridge.requested_quarter}, and it was held unchanged
+              rather than bridged ({indexBridge.mode === 'none'
+                ? 'the bridge is switched off for this run'
+                : bridgeReason(indexBridge.reason)}).
+            </div>
+          )}
 
-      {assumptions.length > 0 && (
-        <div className="assumptions-block">
-          <h3>Assumptions ({assumptions.length})</h3>
-          <ul className="assumption-list">
-            {assumptions.map(function (text, index) {
-              return <li key={'a' + index}>{text}</li>
-            })}
-          </ul>
+          {adjustmentsActive ? (
+            <div className="notice notice-warn">
+              <strong>Index adjusters are active.</strong> Some rates on screen were moved by a manual
+              adjustment rather than by a published index. Every affected line is tagged{' '}
+              <code>basis: assumed</code> and flagged <em>index adjusted</em>, and each adjustment is
+              restated in full below.
+            </div>
+          ) : null}
+
+          {warnings.length > 0 && (
+            <div className="assumptions-block">
+              <h3>
+                <button
+                  type="button"
+                  className="block-toggle"
+                  onClick={function () { setWarningsOpen(!warningsOpen) }}
+                  aria-expanded={warningsOpen}
+                >
+                  <span className="chev">{warningsOpen ? '\u25BC' : '\u25B6'}</span>
+                  Warnings ({warnings.length})
+                </button>
+              </h3>
+              {warningsOpen ? (
+                <ul className="warning-list">
+                  {warnings.map(function (text, index) {
+                    return <li key={'w' + index}>{text}</li>
+                  })}
+                </ul>
+              ) : null}
+            </div>
+          )}
+
+          {assumptions.length > 0 && (
+            <div className="assumptions-block">
+              <h3>
+                <button
+                  type="button"
+                  className="block-toggle"
+                  onClick={function () { setAssumptionsOpen(!assumptionsOpen) }}
+                  aria-expanded={assumptionsOpen}
+                >
+                  <span className="chev">{assumptionsOpen ? '\u25BC' : '\u25B6'}</span>
+                  Assumptions ({assumptions.length})
+                </button>
+              </h3>
+              {assumptionsOpen ? (
+                <ul className="assumption-list">
+                  {assumptions.map(function (text, index) {
+                    return <li key={'a' + index}>{text}</li>
+                  })}
+                </ul>
+              ) : null}
+            </div>
+          )}
         </div>
       )}
     </section>
   )
+}
+
+function fmt(value, digits) {
+  if (value === null || value === undefined || value === '') return 'n/a'
+  const places = digits === undefined ? 3 : digits
+  return Number(value).toFixed(places)
+}
+
+function formatMonths(months) {
+  if (!months || !months.length) return 'the index quarter'
+  if (months.length === 1) return months[0]
+  return months[0] + ' to ' + months[months.length - 1]
+}
+
+function bridgeReason(reason) {
+  const map = {
+    no_cpi_series_configured_for_country: 'no consumer price series is configured for this market',
+    no_cpi_observations_loaded: 'no consumer price observations are loaded',
+    no_cpi_observation_for_the_observation_quarter: 'the CPI has no observation for the index quarter',
+    no_cpi_observation_after_the_index_observation: 'the CPI has no observation after the index quarter',
+    no_cpi_series_covers_both_quarters: 'no loaded CPI series spans both quarters (the publisher rebased the CPI and the bases do not overlap)',
+    cpi_value_at_the_observation_quarter_is_zero: 'the CPI value at the index quarter is zero',
+    index_observation_covers_requested_quarter: 'the index already covers the tender quarter',
+  }
+  return map[reason] || 'no CPI bridge was available'
 }

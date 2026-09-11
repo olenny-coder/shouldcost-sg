@@ -9,8 +9,11 @@ import HelpPopout from './HelpPopout.jsx'
 const COMPONENT_LABEL = {
   material: 'Material (assumed split)',
   labour: 'Labour (assumed split)',
-  market_risk: 'Market risk (TPI movement)',
+  market_risk: 'Market risk (published index movement)',
+  cpi_bridge: 'Index bridged to the tender quarter',
   scope: 'Scope (excluded sections)',
+  overhead: 'Overheads (analyst %)',
+  margin: 'Margin (analyst %)',
   unexplained: 'Unexplained residual',
 }
 
@@ -23,7 +26,10 @@ const COMPONENT_SHORT = {
   material: 'Material',
   labour: 'Labour',
   market_risk: 'Market risk',
+  cpi_bridge: 'CPI bridge',
   scope: 'Scope',
+  overhead: 'Overheads',
+  margin: 'Margin',
   unexplained: 'Unexplained',
 }
 
@@ -33,7 +39,10 @@ const COLOR = {
   material: '#1d4ed8',
   labour: '#2563eb',
   market_risk: '#3b82f6',
+  cpi_bridge: '#0e7490',
   scope: '#60a5fa',
+  overhead: '#7c3aed',
+  margin: '#a855f7',
   unexplained: '#93c5fd',
 }
 
@@ -61,10 +70,18 @@ function WaterfallTooltip(props) {
 }
 
 /**
- * Reconciliation waterfall: BoQ tender total -> should-cost total.
+ * Reconciliation waterfall: BoQ tender total -> FULL should-cost total.
  *
  * Identity enforced by the backend and restated here:
- *   boq_total + material + labour + market_risk + scope + unexplained = should_cost_total
+ *   boq_total + material + labour + market_risk + cpi_bridge + scope + overhead
+ *     + margin + unexplained = full_should_cost_total
+ *
+ * `cpi_bridge` is the modelled step that carries the last published index
+ * observation forward to the tender quarter using the national consumer price
+ * index. `overhead` and `margin` are the analyst's commercial percentages. All
+ * three are basis=assumed - never measured observations. When no overheads or
+ * margin were supplied both steps are exactly zero and the closing bar is the
+ * benchmark should-cost, so a run without them reads exactly as before.
  */
 export default function WaterfallChart(props) {
   const result = props.result
@@ -73,6 +90,11 @@ export default function WaterfallChart(props) {
   // Currency-bound aliases, so every call site below stays unchanged.
   const money = function (value) { return moneyFmt(value, currency) }
   const compactMoney = function (value) { return compactFmt(value, currency) }
+  const ohpActive = !!(result.totals.overhead_pct || result.totals.margin_pct)
+  const fullTotal = result.totals.full_should_cost_total !== undefined
+    && result.totals.full_should_cost_total !== null
+    ? result.totals.full_should_cost_total
+    : result.totals.should_cost_total
 
   const rows = useMemo(function () {
     const out = []
@@ -108,19 +130,23 @@ export default function WaterfallChart(props) {
       running = end
     })
     out.push({
-      name: 'Should-cost total',
-      shortName: 'Should-cost',
+      name: ohpActive ? 'Full should-cost total' : 'Should-cost total',
+      shortName: ohpActive ? 'Full should-cost' : 'Should-cost',
       colorKey: 'should',
       base: 0,
-      delta: result.totals.should_cost_total,
+      delta: fullTotal,
       kind: 'total',
-      basis: 'derived',
-      method: 'sum(quantity x adjusted_benchmark_rate)',
-      justification: 'Benchmark-derived should-cost for the same scope.',
-      runningAfter: result.totals.should_cost_total,
+      basis: ohpActive ? 'assumed' : 'derived',
+      method: ohpActive
+        ? 'sum(quantity x full_adjusted_benchmark_rate)'
+        : 'sum(quantity x adjusted_benchmark_rate)',
+      justification: ohpActive
+        ? 'Benchmark-derived cost grossed up by the analyst\'s overhead and margin percentages. The two OH&P steps are assumptions, so this closing total is assumed rather than derived.'
+        : 'Benchmark-derived should-cost for the same scope.',
+      runningAfter: fullTotal,
     })
     return out
-  }, [result])
+  }, [result, ohpActive, fullTotal])
 
   // Draw each bar's amount above it, coloured by basis so the assumed bars stay
   // visually flagged even though every bar is now a shade of blue.
@@ -145,7 +171,7 @@ export default function WaterfallChart(props) {
 
   const reconciled = Math.abs(
     result.totals.boq_total + result.waterfall.reduce(function (sum, c) { return sum + c.amount }, 0)
-      - result.totals.should_cost_total
+      - fullTotal
   ) <= 0.01
 
   return (
@@ -158,23 +184,40 @@ export default function WaterfallChart(props) {
             'Read it left to right. The first bar is the BoQ as tendered; the last is the benchmark should-cost. Everything between is a step from one to the other.',
             'A blue bar rising means that step pushed should-cost above the tender; falling means it pulled it below.',
             'The number above each bar is that step\'s amount. Its colour states the basis: green measured, blue derived, amber assumed.',
-            'The small chips under the axis repeat each step\'s basis. Amber steps are not evidence - they are apportioned or analyst-supplied.',
+            'The small chips under the axis repeat each step\'s basis. Amber steps are not evidence - they are apportioned, bridged or analyst-supplied.',
+            'Overheads and margin, when you set them, are the last two steps before the closing bar, and the closing bar is then the FULL should-cost.',
             'Hover any bar for the method that produced it and the full justification.',
+            'If the index series has not published the tender quarter yet, its movement to date is bridged with the consumer price index. That step appears as its own amber bar, because it is modelled rather than observed.',
             'The banner above the chart must read "Reconciled". If it does not, treat every figure as unreliable.',
             'The reconciliation table below carries the same numbers in text form, with the method and justification spelled out.',
           ]}
-          footnote="The identity is boq_total + material + labour + market_risk + scope + unexplained = should_cost_total."
+          footnote="The identity is boq_total + material + labour + market_risk + cpi_bridge + scope + overhead + margin + unexplained = full_should_cost_total."
         />
       </h2>
       <p className="muted">
         One blue family, light to dark: the deepest bars are the opening BoQ total and the closing
-        should-cost total. <strong>Amber numbers and chips mark assumed steps</strong> - apportioned
-        or analyst-supplied, never measured.
+        should-cost total. <strong>Amber numbers and chips mark assumed steps</strong> - apportioned,
+        bridged or analyst-supplied, never measured.
       </p>
+
+      {result.index_bridge && result.index_bridge.applied ? (
+        <div className="notice notice-info">
+          <strong>The index was bridged to the tender quarter.</strong>{' '}
+          {result.index_bridge.index_series} last published{' '}
+          <strong>{result.index_bridge.observation_quarter}</strong>; for{' '}
+          {result.index_bridge.requested_quarter} the index was carried forward to{' '}
+          {result.index_bridge.bridged_through_month} with the observed change in{' '}
+          {result.index_bridge.cpi_series_name} (factor{' '}
+          {Number(result.index_bridge.cpi_bridge_factor).toFixed(4)}). That step is the
+          "Index bridged to the tender quarter" bar, and it is <strong>assumed</strong>, not
+          measured.
+        </div>
+      ) : null}
 
       <div className={reconciled ? 'notice notice-ok' : 'notice notice-critical'}>
         {reconciled
-          ? 'Reconciled: BoQ total + adjustments = should-cost total, within 0.01 ' + currency + '.'
+          ? 'Reconciled: BoQ total + adjustments = ' + (ohpActive ? 'full should-cost total' : 'should-cost total')
+            + ', within 0.01 ' + currency + '.'
           : 'WARNING: the waterfall does not reconcile to the cent. Treat these figures as unreliable.'}
       </div>
 
@@ -257,18 +300,42 @@ export default function WaterfallChart(props) {
               )
             })}
             <tr className="row-total">
-              <td>Should-cost total</td>
-              <td className="num">{money(result.totals.should_cost_total)}</td>
-              <td><span className="badge basis-derived">Derived</span></td>
-              <td className="mono">sum(quantity x adjusted_benchmark_rate)</td>
-              <td>Benchmark-derived, including the assumed apportionment above.</td>
+              <td>{ohpActive ? 'Full should-cost total' : 'Should-cost total'}</td>
+              <td className="num">{money(fullTotal)}</td>
+              <td>
+                <span className={'badge basis-' + (ohpActive ? 'assumed' : 'derived')}>
+                  {ohpActive ? 'Assumed' : 'Derived'}
+                </span>
+              </td>
+              <td className="mono">
+                {ohpActive
+                  ? 'sum(quantity x full_adjusted_benchmark_rate)'
+                  : 'sum(quantity x adjusted_benchmark_rate)'}
+              </td>
+              <td>
+                {ohpActive
+                  ? 'Benchmark-derived, including the assumed apportionment, CPI bridge and the analyst\'s overheads and margin above.'
+                  : 'Benchmark-derived, including the assumed apportionment above.'}
+              </td>
             </tr>
           </tbody>
         </table>
       )}
 
       <p className="muted small">
-        Total variance {money(result.totals.total_variance_abs)} ({num(result.totals.total_variance_pct, 2)}%).
+        Total variance {money(result.totals.total_variance_abs)} ({num(result.totals.total_variance_pct, 2)}%)
+        {ohpActive
+          ? ' against the benchmark rate comparison basis chosen (' +
+            (result.totals.overheads_in_tender
+              ? 'full-to-full, tendered rates taken to include OH&P'
+              : 'benchmark rate before overheads') + ')'
+          : ''}
+        .{' '}
+        {ohpActive
+          ? 'Against the FULL should-cost of ' + money(fullTotal) + ' the variance is '
+            + money(result.totals.full_variance_abs) + ' ('
+            + num(result.totals.full_variance_pct, 2) + '%). '
+          : ''}
         {result.totals.unbenchmarked_line_count > 0
           ? ' ' + result.totals.unbenchmarked_line_count + ' line(s) totalling ' + money(result.totals.unbenchmarked_boq_total) + ' could not be benchmarked and are held at the tendered rate.'
           : ''}

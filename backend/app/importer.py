@@ -23,6 +23,8 @@ copy/paste from the published download into the documented template:
   regions          country, region_code, region_name, is_default, factor, currency, source,
                    source_url, source_date, notes, is_placeholder, provenance_note,
                    replace_with
+  cpi              country, series_name, month, base_year, base_value, currency, value,
+                   source_url, is_placeholder, provenance_note, replace_with
 
 Every row is upserted on its natural key, so importing is idempotent and a
 re-import of an updated file simply refreshes the values.
@@ -39,6 +41,7 @@ import pandas as pd
 from .db import get_session_factory, init_db
 from .etl import (
     load_benchmark_rates,
+    load_cpi,
     load_materials,
     load_regional_factors,
     load_tpi,
@@ -50,6 +53,7 @@ KINDS = {
     "materials": load_materials,
     "benchmark_rates": load_benchmark_rates,
     "regions": load_regional_factors,
+    "cpi": load_cpi,
 }
 
 
@@ -144,7 +148,7 @@ def main(argv: list[str] | None = None) -> int:
     print(f"Imported {args.kind} from {args.file}")
     print(f"  rows inserted this run : {result['inserted']}")
     print("  row counts now:")
-    for table in ("tpi_series", "material_prices", "benchmark_rates", "regional_factors"):
+    for table in ("tpi_series", "material_prices", "benchmark_rates", "regional_factors", "cpi_series"):
         print(f"    {table:<18} {result[table]}")
     print("  every imported row is is_placeholder = false with the provenance you supplied.")
     return 0

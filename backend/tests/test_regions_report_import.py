@@ -217,11 +217,18 @@ def test_report_header_names_the_market_region_and_index(client_module, session)
 
 def test_report_reconciles_and_carries_provenance(client_module, session) -> None:
     rows = _report(client_module, _upload_id(session, IN_SAMPLE))
-    # The totals block also carries a non-numeric "basis" metadata row.
+    # The totals block also carries non-numeric metadata rows (the overall basis, the
+    # variance basis label, and the index-freshness booleans).
+    def _as_number(value: str):
+        try:
+            return float(value)
+        except (TypeError, ValueError):
+            return None
+
     totals = {
-        r["ref"]: float(r["value"])
+        r["ref"]: _as_number(r["value"])
         for r in rows
-        if r["block"] == "totals" and r["ref"] != "basis"
+        if r["block"] == "totals" and _as_number(r["value"]) is not None
     }
     waterfall = [r for r in rows if r["block"] == "waterfall" and r["item"] == "amount"]
     component_sum = sum(

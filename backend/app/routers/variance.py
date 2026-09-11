@@ -65,6 +65,7 @@ def benchmark_upload(
             region_code=_region(db, upload, payload.region_code),
             adjustments=payload.adjustments,
             manual_rates=payload.manual_rates,
+            index_bridge=payload.index_bridge,
         )
     except RegionLookupError as exc:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
@@ -98,6 +99,7 @@ def benchmark_upload(
         regional_factor_is_placeholder=computation.regional_factor_is_placeholder,
         regional_factor_source=computation.regional_factor_source,
         adjustments_applied=computation.adjustments_applied,
+        index_bridge=computation.index_bridge,
         lines=[schemas.BenchmarkLine.model_validate(l) for l in computation.lines],
         sections=[schemas.SectionAggregate.model_validate(s) for s in computation.sections],
         totals=schemas.BenchmarkTotals.model_validate(computation.totals),
@@ -134,6 +136,7 @@ def sensitivity_analysis(
             region_code=_region(db, upload, payload.region_code),
             adjustments=payload.adjustments,
             manual_rates=payload.manual_rates,
+            index_bridge=payload.index_bridge,
         )
     except RegionLookupError as exc:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc

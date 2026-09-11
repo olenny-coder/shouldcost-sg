@@ -11,10 +11,10 @@ from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from .. import classifier, schemas
+from .. import benchmark, classifier, schemas
 from ..countries import DEFAULT_COUNTRY, UnknownCountryError, get_country
 from ..db import get_db
-from ..models import BenchmarkRate, MaterialPrice, RegionalFactor, TPISeries
+from ..models import BenchmarkRate, CPISeries, MaterialPrice, RegionalFactor, TPISeries
 
 router = APIRouter(prefix="/api/indices", tags=["indices"])
 
@@ -64,6 +64,160 @@ def list_materials(
     if to_month:
         rows = [r for r in rows if r.month <= to_month.strip()]
     return [schemas.MaterialPointOut.model_validate(r) for r in rows]
+
+
+@router.get("/cpi", response_model=list[schemas.CPIPointOut])
+def list_cpi(
+    series: str | None = Query(None, description="e.g. CPI-ALL"),
+    country: str = Query(DEFAULT_COUNTRY, description="SG | IN"),
+    from_month: str | None = Query(None, description="Inclusive, e.g. 2022-01"),
+    to_month: str | None = Query(None, description="Inclusive, e.g. 2026-07"),
+    db: Session = Depends(get_db),
+) -> list[schemas.CPIPointOut]:
+    """The monthly consumer price series used to carry a stale index forward.
+
+    Real published data for both markets. Served from the local database: the app
+    never calls the statistics office at runtime.
+    """
+    code = _country(country)
+    registry = get_country(code)
+    name = (series or registry.default_cpi_series or "").strip().upper()
+    statement = select(CPISeries).where(CPISeries.country == code)
+    if name:
+        statement = statement.where(CPISeries.series_name == name)
+    rows = list(db.scalars(statement.order_by(CPISeries.series_name, CPISeries.month)))
+    if from_month:
+        rows = [r for r in rows if r.month >= from_month.strip()]
+    if to_month:
+        rows = [r for r in rows if r.month <= to_month.strip()]
+    return [schemas.CPIPointOut.model_validate(r) for r in rows]
+
+
+@router.get("/freshness", response_model=schemas.IndexFreshnessOut)
+def index_freshness(
+    country: str = Query(DEFAULT_COUNTRY, description="SG | IN"),
+    reference_quarter: str | None = Query(
+        None,
+        description=(
+            "Quarter to measure staleness against, e.g. 2026Q3. Defaults to the current "
+            "calendar quarter."
+        ),
+    ),
+    db: Session = Depends(get_db),
+) -> schemas.IndexFreshnessOut:
+    """How current every index series in this market is, and what the CPI bridge does.
+
+    This is the same machinery the benchmark engine uses, exposed so the freshness
+    of the underlying data is visible without running a benchmark. Nothing here is
+    adjusted: it states the last published quarter per series, the lag against the
+    reference quarter, and the CPI-bridged value the engine would use.
+    """
+    from datetime import date
+
+    code = _country(country)
+    registry = get_country(code)
+    if reference_quarter:
+        try:
+            benchmark.parse_quarter(reference_quarter)
+        except ValueError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)
+            ) from exc
+        reference = reference_quarter.strip()
+    else:
+        today = date.today()
+        reference = benchmark.format_quarter(today.year, (today.month - 1) // 3 + 1)
+
+    cpi_rows = list(
+        db.scalars(
+            select(CPISeries)
+            .where(CPISeries.country == code)
+            .order_by(CPISeries.series_name, CPISeries.month)
+        )
+    )
+    default_cpi = (registry.default_cpi_series or "").upper()
+    # The registry names the PREFERRED consumer price series. Other bases may be
+    # loaded too (India carries the 2024-based series and its predecessor, which do
+    # not overlap), and the engine will use whichever one spans both bridge
+    # endpoints. All of them are reported here with their coverage.
+    grouped_cpi: dict[str, list[CPISeries]] = {}
+    for row in cpi_rows:
+        grouped_cpi.setdefault(row.series_name, []).append(row)
+    default_rows = grouped_cpi.get(default_cpi, [])
+    other_series = sorted(name for name in grouped_cpi if name != default_cpi)
+    cpi_series_list = [
+        {
+            "series_name": name,
+            "base_year": rows[-1].base_year,
+            "observations": len(rows),
+            "first_month": rows[0].month,
+            "last_month": rows[-1].month,
+            "latest_value": rows[-1].value,
+            "is_preferred": name == default_cpi,
+            "is_placeholder": any(r.is_placeholder for r in rows),
+            "source_url": rows[-1].source_url,
+        }
+        for name, rows in sorted(grouped_cpi.items())
+    ]
+
+    series_rows = list(
+        db.scalars(
+            select(TPISeries)
+            .where(TPISeries.country == code)
+            .order_by(TPISeries.series_name, TPISeries.quarter)
+        )
+    )
+    grouped: dict[str, list[TPISeries]] = {}
+    for row in series_rows:
+        grouped.setdefault(row.series_name, []).append(row)
+
+    series_out: list[dict] = []
+    for name in sorted(grouped):
+        rows = grouped[name]
+        latest = rows[-1]
+        bridge = benchmark.resolve_cpi_bridge(
+            db,
+            country=code,
+            observation_quarter=latest.quarter,
+            requested_quarter=reference,
+            mode=benchmark.BRIDGE_CPI,
+            published_index_value=latest.value,
+        )
+        if bridge.applied:
+            bridge.bridged_index_value = latest.value * bridge.factor
+        series_out.append(
+            {
+                "series_name": name,
+                "observations": len(rows),
+                "first_quarter": rows[0].quarter,
+                "latest_quarter": latest.quarter,
+                "latest_value": latest.value,
+                "base_year": latest.base_year,
+                "lag_quarters": benchmark.quarter_sort_key(reference)
+                - benchmark.quarter_sort_key(latest.quarter),
+                "is_placeholder": latest.is_placeholder,
+                "source_url": latest.source_url,
+                "bridge": bridge.as_dict(),
+            }
+        )
+
+    return schemas.IndexFreshnessOut(
+        country=code,
+        country_name=registry.name,
+        currency=registry.currency,
+        reference_quarter=reference,
+        cpi_series_name=default_cpi,
+        cpi_series_available=bool(default_rows),
+        cpi_latest_month=default_rows[-1].month if default_rows else None,
+        cpi_latest_value=default_rows[-1].value if default_rows else None,
+        cpi_base_year=default_rows[-1].base_year if default_rows else None,
+        cpi_observations=len(default_rows),
+        cpi_is_placeholder=any(r.is_placeholder for r in default_rows),
+        cpi_source_url=default_rows[-1].source_url if default_rows else "",
+        cpi_other_series=other_series,
+        cpi_series_list=cpi_series_list,
+        series=series_out,
+    )
 
 
 @router.get("/benchmark-rates", response_model=list[schemas.BenchmarkRateOut])

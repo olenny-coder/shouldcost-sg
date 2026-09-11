@@ -16,8 +16,28 @@ const MATERIAL_LABEL = {
   ready_mix_concrete: 'Ready-mixed concrete',
 };
 
+function fmtMonths(months) {
+  if (!months || !months.length) return 'n/a';
+  if (months.length === 1) return months[0];
+  return months[0] + '-' + months[months.length - 1];
+}
+
+function bridgeReason(reason) {
+  const map = {
+    no_cpi_series_configured_for_country: 'no consumer price series is configured for this market',
+    no_cpi_observations_loaded: 'no consumer price observations are loaded',
+    no_cpi_observation_for_the_observation_quarter: 'the CPI has no observation for the index quarter',
+    no_cpi_observation_after_the_index_observation: 'the CPI has no observation after the index quarter',
+    no_cpi_series_covers_both_quarters: 'no loaded CPI series spans both quarters (the publisher rebased the CPI, and the bases do not overlap)',
+    cpi_value_at_the_observation_quarter_is_zero: 'the CPI value at the index quarter is zero',
+    index_observation_covers_requested_quarter: 'no bridge needed',
+  };
+  return map[reason] || 'no CPI bridge available';
+}
+
 export default function IndexDashboard(props) {
   const tpiRows = props.tpiRows || [];
+  const cpiRows = props.cpiRows || [];
   const materialRows = props.materialRows || [];
   const benchmarkRates = props.benchmarkRates || [];
   const country = props.country || { name: 'Singapore', currency: 'SGD', base_year: 2010, sources: [] };
@@ -56,12 +76,30 @@ export default function IndexDashboard(props) {
       .sort(function (a, b) { return a.month.localeCompare(b.month); });
   }, [materialRows, material, materialScenarioPct]);
 
-  const allRows = tpiRows.concat(materialRows, benchmarkRates);
+  const allRows = tpiRows.concat(cpiRows, materialRows, benchmarkRates);
   const selectedUnit = (materialRows.filter(function (r) { return r.material === material; })[0] || {}).unit || '';
   // India publishes WPI cost indices; Singapore publishes actual prices. Say which.
   const materialIsIndex = selectedUnit.indexOf('index') === 0;
   const placeholderCount = allRows.filter(function (r) { return r.is_placeholder; }).length;
   const realCount = allRows.length - placeholderCount;
+
+  const freshness = props.freshness || null;
+  const bridgeMode = props.bridgeMode || 'cpi';
+
+  const cpiData = useMemo(function () {
+    return cpiRows
+      .map(function (row) {
+        return { month: row.month, value: row.value, is_placeholder: row.is_placeholder };
+      })
+      .sort(function (a, b) { return a.month.localeCompare(b.month); });
+  }, [cpiRows]);
+
+  const cpiMeta = useMemo(function () {
+    if (!cpiRows.length) return { series: [], latest: null, unit: '' };
+    const series = Array.from(new Set(cpiRows.map(function (r) { return r.series_name; }))).sort();
+    const latest = cpiRows.slice().sort(function (a, b) { return a.month.localeCompare(b.month); }).slice(-1)[0];
+    return { series: series, latest: latest, unit: latest.unit || ('index (base ' + latest.base_year + ' = 100)') };
+  }, [cpiRows]);
 
   // A series is REAL only when every one of its observations is real.
   const seriesQuality = useMemo(function () {
@@ -90,6 +128,8 @@ export default function IndexDashboard(props) {
             'The table beneath it states what each series includes and excludes. A series that excludes a section cannot price that section - when your BoQ contains one, the benchmark holds it at base year and says so.',
             'Each series is badged real or placeholder. Real means the numbers came from the named official publication; placeholder means they are synthetic and carry a TODO.',
             'The material chart shows input costs. For Singapore these are actual prices from BCA; for India they are WPI cost indices, so the axis is index points, not rupees.',
+            'The "Data currency and the CPI bridge" table states the last quarter each index actually published, how stale that is against the quarter you are pricing, and the CPI-bridged value the engine uses in its place. The CPI chart below it is the series behind that bridge.',
+            'A bridged index is a modelled step, not an observation: every line it touches is reported as basis=assumed and flagged CPI-bridged. Switch it off with the "Stale index" selector, and those lines are held at the last published level instead.',
             'The material scenario slider is display-only. It re-scales the chart and deliberately does not change should-cost, because the agreed formula has no material-escalation term.',
             'The rate library at the bottom is what actually prices your BoQ, with the source, date and confidence behind every section. All rates are placeholders pending a licensed schedule of rates.',
             'The sources table names the publications each market relies on. Refresh them with python -m app.importer.',
@@ -192,6 +232,214 @@ export default function IndexDashboard(props) {
         contains such a section, the benchmark holds that section at base year and raises a named
         warning - see the assumptions panel.
       </p>
+
+      <h3>Data currency and the CPI bridge - {country.name}</h3>
+      <p className="muted small">
+        Published construction cost indexes lag. These tables state, per series, the last quarter
+        actually published and what the benchmark does about the gap between that quarter and the
+        one being priced. The bridge is only ever a <strong>modelled</strong> step: consumer prices
+        are not construction costs, so every line it touches is reported as{' '}
+        <span className="badge basis-assumed">assumed</span> and flagged <em>CPI-bridged</em>.
+      </p>
+      {props.indexBridge ? (
+        <p className={'small ' + (props.indexBridge.applied ? 'bridge-line' : 'muted')}>
+          <strong>Last benchmark run:</strong>{' '}
+          {props.indexBridge.applied
+            ? 'the index for ' + props.indexBridge.requested_quarter + ' was bridged from '
+              + props.indexBridge.observation_quarter + ' to ' + props.indexBridge.bridged_through_month
+              + ' with ' + props.indexBridge.cpi_series_name + ' (factor '
+              + num(props.indexBridge.cpi_bridge_factor, 4) + ').'
+            : 'the index observation covers ' + props.indexBridge.requested_quarter
+              + ' or no bridge was applied (' + bridgeReason(props.indexBridge.reason) + ').'}
+        </p>
+      ) : null}
+
+      <div className="tile-grid">
+        <div className="tile">
+          <div className="tile-label">Consumer price index to</div>
+          <div className="tile-value">{freshness && freshness.cpi_latest_month ? freshness.cpi_latest_month : 'n/a'}</div>
+          <div className="tile-sub">
+            {freshness && freshness.cpi_latest_value !== null && freshness.cpi_latest_value !== undefined
+              ? freshness.cpi_series_name + ' = ' + num(freshness.cpi_latest_value, 3)
+                + (freshness.cpi_base_year ? ' (base ' + freshness.cpi_base_year + ' = 100)' : '')
+              : 'no consumer price series loaded for this market'}
+          </div>
+        </div>
+        <div className="tile">
+          <div className="tile-label">Quarter being priced</div>
+          <div className="tile-value">{freshness ? freshness.reference_quarter : (props.tenderQuarter || 'n/a')}</div>
+          <div className="tile-sub">
+            stale index series are {bridgeMode === 'none' ? 'held at their last observation' : 'bridged with the CPI'}
+          </div>
+        </div>
+        <div className={'tile ' + (placeholderCount ? 'tile-warn' : 'tile-good')}>
+          <div className="tile-label">Series still synthetic</div>
+          <div className="tile-value">{(freshness ? freshness.series.filter(function (s) { return s.is_placeholder; }).length : 0)}</div>
+          <div className="tile-sub">of {freshness ? freshness.series.length : 0} index series in this market</div>
+        </div>
+      </div>
+
+      <div className="table-scroll">
+        <table className="data-table compact">
+          <thead>
+            <tr>
+              <th>Series</th>
+              <th>Last published</th>
+              <th className="num">Value</th>
+              <th className="num">Lag (qtrs)</th>
+              <th>Bridged to</th>
+              <th className="num">Bridge factor</th>
+              <th className="num">Index used</th>
+            </tr>
+          </thead>
+          <tbody>
+            {(freshness ? freshness.series : []).map(function (row) {
+              const bridge = row.bridge || {};
+              return (
+                <tr key={row.series_name}>
+                  <td><span className="section-pill">{row.series_name}</span></td>
+                  <td>
+                    {row.latest_quarter}
+                    {row.is_placeholder
+                      ? <div><span className="badge basis-assumed">placeholder</span></div>
+                      : <div><span className="badge basis-measured">real</span></div>}
+                  </td>
+                  <td className="num">{num(row.latest_value, 2)}</td>
+                  <td className="num">{row.lag_quarters}</td>
+                  <td>
+                    {bridge.applied
+                      ? <span>{bridge.bridged_through_month}
+                          <div className="small muted">
+                            via {bridge.cpi_series_name}
+                            {' '}
+                            ({fmtMonths(bridge.cpi_from_months)} {num(bridge.cpi_from_value, 3)}
+                            {' \u2192 '}
+                            {fmtMonths(bridge.cpi_to_months)} {num(bridge.cpi_to_value, 3)})
+                          </div>
+                          {bridge.shortfall_months > 0 ? (
+                            <div className="small bridge-line">
+                              {bridge.shortfall_months} month(s) short of the quarter end
+                            </div>
+                          ) : null}
+                        </span>
+                      : <span className="muted small">{row.lag_quarters === 0 ? 'already covers the quarter' : bridgeReason(bridge.reason)}</span>}
+                  </td>
+                  <td className="num">
+                    {bridge.applied
+                      ? <span className="badge basis-assumed">x{num(bridge.cpi_bridge_factor, 4)}</span>
+                      : <span className="muted">1.0000</span>}
+                  </td>
+                  <td className="num">
+                    {num(bridge.index_value_used !== null && bridge.index_value_used !== undefined
+                      ? bridge.index_value_used : row.latest_value, 2)}
+                  </td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      </div>
+      <p className="muted small">
+        Bridge formula:{' '}
+        <code>
+          index(tender quarter) = index(last published quarter) x cpi(bridged month) / cpi(last
+          published quarter)
+        </code>
+        , where each CPI endpoint is the mean of the months available in that quarter. Both are real
+        published values; the step that applies consumer price movement to a construction cost index
+        is the modelled part. Switch it off with the "Stale index" selector above the tabs.
+      </p>
+
+      <h3>Consumer price index ({cpiMeta.series.join(', ') || 'not loaded'})</h3>
+      <p className="muted small">
+        The monthly series behind the bridge, as published.{' '}
+        {cpiRows.filter(function (r) { return !r.is_placeholder; }).length} of {cpiRows.length}{' '}
+        observations here are real published data.
+        {freshness && freshness.cpi_source_url ? (
+          <span>
+            {' '}Source:{' '}
+            <a href={freshness.cpi_source_url} target="_blank" rel="noreferrer">
+              {freshness.cpi_source_url}
+            </a>
+          </span>
+        ) : null}
+      </p>
+      {freshness && freshness.cpi_series_list && freshness.cpi_series_list.length > 1 ? (
+        <>
+          <p className="muted small">
+            The publisher has rebased this index, so more than one consumer price series is loaded
+            and <strong>only the preferred one is charted</strong>. The bridge picks whichever series
+            covers both of its endpoints, and never chains or splices across a base change - if none
+            spans the two quarters, it says so instead of inventing a level shift.
+          </p>
+          <div className="table-scroll">
+            <table className="data-table compact">
+              <thead>
+                <tr>
+                  <th>CPI series</th><th>Base</th><th>Covers</th>
+                  <th className="num">Latest</th><th>Role</th>
+                </tr>
+              </thead>
+              <tbody>
+                {freshness.cpi_series_list.map(function (row) {
+                  return (
+                    <tr key={row.series_name}>
+                      <td><span className="section-pill">{row.series_name}</span></td>
+                      <td>{row.base_year} = 100</td>
+                      <td className="small">{row.first_month} .. {row.last_month} ({row.observations} months)</td>
+                      <td className="num">{num(row.latest_value, 3)}</td>
+                      <td>
+                        {row.is_preferred
+                          ? <span className="badge basis-derived">preferred</span>
+                          : <span className="badge">fallback</span>}
+                        {row.is_placeholder
+                          ? <div><span className="badge basis-assumed">placeholder</span></div>
+                          : null}
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        </>
+      ) : null}
+      {cpiData.length ? (
+        <div className="chart-card">
+          <div style={{ width: '100%', height: 260 }}>
+            <ResponsiveContainer>
+              <LineChart data={cpiData} margin={{ top: 10, right: 20, bottom: 10, left: 6 }}>
+                <CartesianGrid strokeDasharray="3 3" stroke="#e3eefb" />
+                <XAxis dataKey="month" tick={{ fontSize: 11 }} minTickGap={24} />
+                <YAxis
+                  domain={['auto', 'auto']}
+                  tick={{ fontSize: 11 }}
+                  label={{
+                    value: cpiMeta.latest ? 'index (' + cpiMeta.latest.base_year + ' = 100)' : 'index',
+                    angle: -90, position: 'insideLeft', fontSize: 10, fill: '#64809f',
+                  }}
+                />
+                <Tooltip formatter={function (value) { return num(value, 3) + ' index points'; }} />
+                <Legend />
+                <Line
+                  type="monotone"
+                  dataKey="value"
+                  name="CPI, all items"
+                  stroke="#b45309"
+                  strokeWidth={2.4}
+                  dot={false}
+                />
+              </LineChart>
+            </ResponsiveContainer>
+          </div>
+        </div>
+      ) : (
+        <div className="notice notice-warn">
+          No consumer price series is loaded for this market, so a stale index cannot be bridged and
+          is held at its last published observation instead. Import one with{' '}
+          <code>python -m app.importer --kind cpi</code>.
+        </div>
+      )}
 
       <h3>{materialIsIndex ? 'Material cost index' : 'Material price trend'} - {country.name}</h3>
       <p className="muted small">

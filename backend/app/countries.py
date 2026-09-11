@@ -27,6 +27,10 @@ class Country:
     measurement_note: str
     default_tpi_series: str
     unit_convention: str
+    # The monthly consumer price series used to carry a stale index observation
+    # forward to the tender quarter. Empty means no bridge is available and the
+    # engine falls back to holding the last observation, with a warning.
+    default_cpi_series: str = ""
     sources: tuple[Source, ...] = field(default_factory=tuple)
 
 
@@ -42,6 +46,7 @@ SINGAPORE = Country(
     ),
     default_tpi_series="BCA",
     unit_convention="Metric SI. Rates are per m, m2, m3, tonne or lump sum.",
+    default_cpi_series="CPI-ALL",
     sources=(
         Source("BCA Tender Price Index (TPI)", "https://www1.bca.gov.sg/",
                "Tender price movement for building works, base 2010 = 100. Excludes piling, "
@@ -53,6 +58,12 @@ SINGAPORE = Country(
                "Elemental unit rates and material price indices for fluctuation clauses."),
         Source("SingStat / BCA material price series", "https://www.singstat.gov.sg/",
                "Cement, steel reinforcement and ready-mixed concrete; monthly from Jan 1999."),
+        Source("Consumer Price Index (CPI), Singapore Department of Statistics",
+               "https://tablebuilder.singstat.gov.sg/table/TS/M213751",
+               "USED IN THIS APP: the monthly All Items CPI (2024 = 100), table M213751, is "
+               "real data in this database. It is the series used to carry the last BCA tender "
+               "price index observation forward to the tender quarter, because the CPI is "
+               "published monthly and the TPI only quarterly."),
         Source("RLB Rider's Digest", "https://www.rlb.com/",
                "Building-type rates and TPI series for Singapore."),
         Source("Arcadis Quarterly Cost Review", "https://www.arcadis.com/",
@@ -75,6 +86,7 @@ INDIA = Country(
     ),
     default_tpi_series="WPI-CONST",
     unit_convention="Metric SI. Rates are per m, m2, m3, tonne or lump sum, in Indian Rupees.",
+    default_cpi_series="CPI-ALL",
     sources=(
         Source("CPWD Cost Index", "https://cpwd.gov.in/",
                "Central Public Works Department construction cost index, used with DSR and "
@@ -95,7 +107,13 @@ INDIA = Country(
                "multipliers, which are placeholders until those circulars are licensed."),
         Source("Ministry of Statistics and Programme Implementation (MoSPI)",
                "https://www.mospi.gov.in/",
-               "National statistical series supporting price and construction output data."),
+               "National statistical series supporting price and construction output data. "
+               "USED IN THIS APP: the monthly Consumer Price Index (Combined, All-India General) is "
+               "real data in this database and is the series used to carry the last WPI quarter "
+               "forward to the tender quarter. MoSPI publishes it on base 2024 = 100, together with "
+               "its own back-cast months on that base, and on the predecessor base 2012 = 100. "
+               "There is no 2016 = 100 retail CPI in India - that base belongs to the Labour "
+               "Bureau's CPI-IW, a different basket."),
         Source("Bureau of Indian Standards (BIS) - IS 1200", "https://www.bis.gov.in/",
                "Publisher of IS 1200 (Methods of Measurement of Building and Civil Engineering "
                "Works) and of the IS 456 concrete grades (M20, M25, M30 ...) used in Indian Bills "
@@ -141,6 +159,7 @@ def registry_as_dicts() -> list[dict]:
                 "measurement_standard": country.measurement_standard,
                 "measurement_note": country.measurement_note,
                 "default_tpi_series": country.default_tpi_series,
+                "default_cpi_series": country.default_cpi_series,
                 "unit_convention": country.unit_convention,
                 "sources": [
                     {"name": s.name, "url": s.url, "what": s.what} for s in country.sources

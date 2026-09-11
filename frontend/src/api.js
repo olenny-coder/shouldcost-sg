@@ -77,6 +77,8 @@ export const api = {
     return unwrap(http.get('/api/boq', { params: { country: country } }));
   },
   listTpi: function (params) { return unwrap(http.get('/api/indices/tpi', { params: params })); },
+  listCpi: function (params) { return unwrap(http.get('/api/indices/cpi', { params: params })); },
+  indexFreshness: function (params) { return unwrap(http.get('/api/indices/freshness', { params: params })); },
   listMaterials: function (params) { return unwrap(http.get('/api/indices/materials', { params: params })); },
   listBenchmarkRates: function (params) { return unwrap(http.get('/api/indices/benchmark-rates', { params: params })); },
   listRegions: function (params) { return unwrap(http.get('/api/indices/regions', { params: params })); },

@@ -247,13 +247,33 @@ def test_waterfall_reconciles_boq_total_to_should_cost_total(session, sample_upl
     assert abs(total - result.totals["should_cost_total"]) <= 0.01
 
     components = {w["component"] for w in result.waterfall}
-    assert components == {"material", "labour", "market_risk", "scope", "unexplained"}
+    assert components == {
+        "material", "labour", "market_risk", "cpi_bridge", "scope", "overhead", "margin",
+        "unexplained",
+    }
     bases = {w["component"]: w["basis"] for w in result.waterfall}
     assert bases["material"] == "assumed"
     assert bases["labour"] == "assumed"
     assert bases["market_risk"] == "derived"
+    # The CPI bridge is a modelled step, never a derived observation.
+    assert bases["cpi_bridge"] == "assumed"
     assert bases["scope"] == "derived"
+    # Overheads and margin are analyst inputs, so they are assumed - and exactly zero
+    # when the analyst supplied none.
+    assert bases["overhead"] == "assumed"
+    assert bases["margin"] == "assumed"
     assert bases["unexplained"] == "derived"
+    amounts = {w["component"]: w["amount"] for w in result.waterfall}
+    assert amounts["overhead"] == 0.0
+    assert amounts["margin"] == 0.0
+
+    # The demonstration run prices 2024Q4, which every series has published, so
+    # the bridge is present but exactly zero.
+    assert amounts["cpi_bridge"] == 0.0
+    assert result.totals["index_bridge_applied"] is False
+    assert result.index_bridge["applied"] is False
+    # With no overheads or margin supplied, the full total is the benchmark total.
+    assert result.totals["full_should_cost_total"] == result.totals["should_cost_total"]
 
 
 def test_per_line_amounts_sum_to_the_totals(session, sample_upload_id) -> None:
