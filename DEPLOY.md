@@ -174,8 +174,38 @@ ETL: real published data vs synthetic placeholder
 index for Singapore. It is what carries a stale index observation forward to the tender quarter - see
 README "Keeping the indexes current".)
 
-It is idempotent, so re-running is always safe. If the Shell tab is not offered, add a temporary
-**Job** to the blueprint (```type: job```, ```runtime: python```, ```rootDir: backend```,
+It is idempotent, so re-running is always safe.
+
+#### If the Shell tab is not offered, or the app loads but shows nothing
+
+`/api/healthz` reports ```db: connected``` even against an **empty** database - ```SELECT 1``` succeeds
+on a schema with no rows in it. So the symptom of an unseeded deploy is an app that loads and
+shows zero indexes and no sample bills, while health looks perfectly fine.
+
+Check it:
+
+```bash
+curl "https://<your-service>.onrender.com/api/indices/regions?country=IN"
+```
+
+`[]` means it has not been seeded. To seed from your own machine instead of the browser Shell:
+
+```powershell
+cd "C:\Users\Spare Parts\Should Cost\shouldcost-sg"
+.\tools\seed_remote.ps1
+```
+
+It prompts for the connection string with the input hidden, runs the ETL against that database,
+then verifies the result through the deployed API and prints the row counts. Pass
+```-ApiBase https://<your-service>.onrender.com``` to point it at your service, or
+```-SkipVerify``` to seed without checking.
+
+> **Do not run ```python -m app.etl``` in a plain PowerShell window without setting**
+> ```DATABASE_URL```**.** With no ```DATABASE_URL``` the app defaults to local SQLite, so the command
+> succeeds, prints happy row counts, and writes to ```backend/shouldcost.db``` on your machine.
+> Production stays empty and nothing tells you why. That is what the script exists to prevent.
+
+If the Shell tab is not offered, add a temporary **Job** to the blueprint (```type: job```, ```runtime: python```, ```rootDir: backend```,
 ```startCommand: python -m app.etl```), run it once, then remove it.
 
 ### 3d. Note your API URL
