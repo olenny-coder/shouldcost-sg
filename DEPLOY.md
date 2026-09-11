@@ -159,7 +159,7 @@ ETL: row counts after load
   material_prices    180
   benchmark_rates    20
   regional_factors   13
-  cpi_series          55
+  cpi_series         146
   boq_uploads        2
   boq_items          40
 ETL: real published data vs synthetic placeholder
@@ -167,7 +167,7 @@ ETL: real published data vs synthetic placeholder
   material_prices     180 real /  180 total   [REAL]
   benchmark_rates       0 real /   20 total   [placeholder]
   regional_factors      0 real /   13 total   [placeholder]
-  cpi_series           55 real /   55 total   [REAL]
+  cpi_series          146 real /  146 total   [REAL]
 ```
 
 (`cpi_series` is seeded from `backend/data/cpi_series.csv`, which is the real monthly consumer price
@@ -295,7 +295,7 @@ Mumbai's should-cost should be ~12.8% above Delhi's.
 Open the Vercel URL and check:
 
 - [ ] The header strip reads ```API ok | db connected | production```
-- [ ] **Load seeded sample** in the Upload tab loads the SG and IN samples
+- [ ] The Upload tab lists **Recent uploads**; the two buttons prefixed **Sample:** load the Singapore and India demonstration bills (the app also auto-loads one when you switch market)
 - [ ] The variance table shows amber **NOT BENCHMARKED** rows and a coverage panel
 - [ ] Switching the market to India reveals the **Region** selector (12 cities)
 - [ ] The waterfall reconciles, with labelled rounded blue bars
