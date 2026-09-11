@@ -16,6 +16,28 @@ DEFAULT_DEV_CORS_ORIGINS = (
 )
 
 
+# Dashboard "KEY = value" pastes land in the value box whole. Strip the prefix so
+# a copy/paste slip cannot silently produce a URL or pattern that matches nothing.
+#
+# Two deliberately narrow forms, because a greedy matcher here corrupts real values:
+#   KEY = value      - the key charset excludes ':' and '/', so a URL cannot match
+#   KEY: value       - allowed only for an UPPERCASE key, so "https:" never matches
+_ENV_PREFIX_RE = re.compile(
+    r"^\s*(?:export\s+)?(?:[A-Za-z_][A-Za-z0-9_]*\s*=|(?:[A-Z][A-Z0-9_]*)\s*:)\s*"
+)
+
+
+def _clean_env_value(raw: str | None) -> str | None:
+    """Trim quoting and strip an accidental `KEY = ` prefix from a pasted value."""
+    if raw is None:
+        return None
+    value = raw.strip()
+    if len(value) >= 2 and value[0] == value[-1] and value[0] in {'"', "'"}:
+        value = value[1:-1].strip()
+    value = _ENV_PREFIX_RE.sub("", value).strip()
+    return value or None
+
+
 def _normalise_db_url(raw: str) -> str:
     """Normalise a SQLAlchemy database URL.
 
@@ -39,10 +61,13 @@ class Settings:
             os.environ.get("DATABASE_URL") or DEFAULT_DATABASE_URL
         )
         self.environment: str = (os.environ.get("ENVIRONMENT") or "development").strip().lower()
-        self.frontend_url: str | None = (os.environ.get("FRONTEND_URL") or "").strip().rstrip("/") or None
-        self.frontend_preview_regex: str | None = (
-            os.environ.get("FRONTEND_PREVIEW_REGEX") or ""
-        ).strip() or None
+        cleaned_frontend = _clean_env_value(os.environ.get("FRONTEND_URL"))
+        self.frontend_url: str | None = (
+            cleaned_frontend.rstrip("/") if cleaned_frontend else None
+        )
+        self.frontend_preview_regex: str | None = _clean_env_value(
+            os.environ.get("FRONTEND_PREVIEW_REGEX")
+        )
         self.dev_cors_origins: list[str] = [
             origin.strip()
             for origin in (os.environ.get("DEV_CORS_ORIGINS") or DEFAULT_DEV_CORS_ORIGINS).split(",")
@@ -80,10 +105,19 @@ class Settings:
             return None
         try:
             re.compile(pattern)
-        except re.error as exc:  # pragma: no cover - misconfiguration guard
+        except re.error as exc:
             raise ValueError(
-                f"FRONTEND_PREVIEW_REGEX is not a valid regular expression: {exc}"
+                f"FRONTEND_PREVIEW_REGEX is not a valid regular expression: {exc}. "
+                f"Received {pattern!r}."
             ) from exc
+        if re.search(r"\s", pattern):
+            # A browser Origin header never contains whitespace, so a pattern with
+            # any can never match. Almost always a paste of "KEY = value".
+            raise ValueError(
+                "FRONTEND_PREVIEW_REGEX contains whitespace, so it can never match an "
+                f"Origin header. Received {pattern!r}. Expected just the pattern, e.g. "
+                r"^https://your-app-.*\.vercel\.app$"
+            )
         return pattern
 
 
