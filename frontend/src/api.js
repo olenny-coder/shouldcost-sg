@@ -77,7 +77,10 @@ export const api = {
     return unwrap(http.get('/api/boq', { params: { country: country } }));
   },
   listTpi: function (params) { return unwrap(http.get('/api/indices/tpi', { params: params })); },
-  listCpi: function (params) { return unwrap(http.get('/api/indices/cpi', { params: params })); },
+  // Producer and consumer price series, used for the staleness bridge.
+  // Renamed from /api/indices/cpi when the table gained PPI rows.
+  listPriceSeries: function (params) { return unwrap(http.get('/api/indices/price-series', { params: params })); },
+  listCpi: function (params) { return unwrap(http.get('/api/indices/price-series', { params: params })); },
   indexFreshness: function (params) { return unwrap(http.get('/api/indices/freshness', { params: params })); },
   listMaterials: function (params) { return unwrap(http.get('/api/indices/materials', { params: params })); },
   listBenchmarkRates: function (params) { return unwrap(http.get('/api/indices/benchmark-rates', { params: params })); },
