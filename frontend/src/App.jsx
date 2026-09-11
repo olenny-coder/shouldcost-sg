@@ -80,6 +80,8 @@ export default function App() {
   const [priceRows, setPriceRows] = useState([])
   const [freshness, setFreshness] = useState(null)
   const [indexCoverage, setIndexCoverage] = useState(null)
+  // True when the API is older than this UI and has no /api/indices/coverage route.
+  const [coverageUnavailable, setCoverageUnavailable] = useState(false)
   const [materialRows, setMaterialRows] = useState([])
   const [benchmarkRates, setBenchmarkRates] = useState([])
   const [classifierRules, setClassifierRules] = useState(null)
@@ -146,6 +148,16 @@ export default function App() {
       setAdjustments(NO_ADJUSTMENTS)
       setManualRates({})
       try {
+        // The coverage matrix is an OPTIONAL panel. It was added after the rest of
+        // the reference data, so a backend that predates it answers 404 - and a
+        // frontend deployed ahead of its API must degrade to "coverage unavailable"
+        // rather than failing the whole country load. Everything else is required.
+        setCoverageUnavailable(false)
+        const coverageCall = api.indexCoverage({ country: countryCode })
+          .catch(function () {
+            setCoverageUnavailable(true)
+            return null
+          })
         const responses = await Promise.all([
           api.listTpi({ country: countryCode }),
           api.listMaterials({ country: countryCode }),
@@ -154,7 +166,7 @@ export default function App() {
           api.listUploads(countryCode),
           api.listRegions({ country: countryCode }),
           api.listCpi({ country: countryCode }),
-          api.indexCoverage({ country: countryCode }),
+          coverageCall,
         ])
         if (cancelled) return
         const tpi = responses[0]
@@ -735,6 +747,7 @@ export default function App() {
           cpiRows={cpiRows}
           ppiRows={ppiRows}
           coverage={indexCoverage}
+          coverageUnavailable={coverageUnavailable}
           freshness={freshness}
           indexBridge={result ? result.index_bridge : null}
           materialRows={materialRows}

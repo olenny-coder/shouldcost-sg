@@ -248,8 +248,21 @@ export default function IndexDashboard(props) {
         read from the database, so it reports what is actually loaded. {coverage
           ? coverage.producer_covered_sections.length + ' of ' + coverage.sections.length
             + ' sections are covered by a published producer index in ' + coverage.country_name + '.'
-          : 'Coverage data has not loaded yet.'}
+          : (props.coverageUnavailable
+            ? 'This view is not available from the API you are connected to.'
+            : 'Coverage data has not loaded yet.')}
       </p>
+      {props.coverageUnavailable && !coverage ? (
+        <div className="notice notice-warn">
+          <strong>The section coverage table is unavailable on this deployment.</strong>{' '}
+          <code>GET /api/indices/coverage</code> returned 404, which means the API is running a
+          build from before this panel existed - most often because the frontend was deployed ahead
+          of the backend. Everything else on this page is working, and no figure here is affected:
+          redeploy the backend service and reload. Details:{' '}
+          <code>GET /api/indices/coverage?country=</code>{' '}
+          {country.code || 'SG'} on the API host configured for this site.
+        </div>
+      ) : null}
       {coverage ? (
         <div className="table-scroll">
           <table className="data-table compact">
