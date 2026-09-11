@@ -38,6 +38,10 @@ def _clean_env_value(raw: str | None) -> str | None:
     return value or None
 
 
+def _as_bool(raw: str | None) -> bool:
+    return (raw or "").strip().lower() in {"1", "true", "yes", "on"}
+
+
 def _normalise_db_url(raw: str) -> str:
     """Normalise a SQLAlchemy database URL.
 
@@ -68,6 +72,10 @@ class Settings:
         self.frontend_preview_regex: str | None = _clean_env_value(
             os.environ.get("FRONTEND_PREVIEW_REGEX")
         )
+        # Seed the reference data on first boot when the database is empty.
+        # Off by default; exists because the free Render plan has no Shell, which
+        # otherwise makes seeding a manual step with a silent failure mode.
+        self.auto_seed: bool = _as_bool(os.environ.get("AUTO_SEED"))
         self.dev_cors_origins: list[str] = [
             origin.strip()
             for origin in (os.environ.get("DEV_CORS_ORIGINS") or DEFAULT_DEV_CORS_ORIGINS).split(",")

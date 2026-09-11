@@ -6,6 +6,7 @@ Deployed on Render as:
 
 from __future__ import annotations
 
+import logging
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
@@ -20,11 +21,54 @@ from .db import get_engine, get_session_factory, init_db
 from .routers import boq, indices, variance
 
 
+logger = logging.getLogger("uvicorn.error")
+
+
+def seed_if_empty() -> dict:
+    """Load the reference data, but only when the database is empty.
+
+    Exists because the free Render plan offers no Shell, so the normal
+    "run python -m app.etl once" step has nowhere to run. Gated by AUTO_SEED so
+    it is off unless asked for, and it short-circuits on a populated database so
+    a cold start costs one COUNT(*) rather than a full reload.
+    """
+    from sqlalchemy import func, select
+
+    from .db import get_session_factory
+    from .etl import run_etl
+    from .models import TPISeries
+
+    session = get_session_factory()()
+    try:
+        existing = session.scalar(select(func.count()).select_from(TPISeries)) or 0
+    except Exception as exc:  # table missing, permissions, connection
+        logger.warning("AUTO_SEED: could not read tpi_series (%s); skipping", exc)
+        return {"seeded": False, "reason": "unreadable", "existing_rows": None}
+    finally:
+        session.close()
+
+    if existing:
+        return {"seeded": False, "reason": "already populated", "existing_rows": existing}
+
+    logger.info("AUTO_SEED: database is empty - loading the reference data")
+    result = run_etl()
+    logger.info("AUTO_SEED: loaded %s", result["rows"])
+    return {"seeded": True, "reason": "empty database", "existing_rows": 0, "rows": result["rows"]}
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     # Create any missing tables on boot. Safe and idempotent; it also means a
     # fresh Render PostgreSQL instance is usable before the first ETL run.
     init_db()
+    if settings.auto_seed:
+        try:
+            outcome = seed_if_empty()
+            logger.info("AUTO_SEED: %s", outcome.get("reason"))
+        except Exception:
+            # Never let seeding stop the service from starting: an operator can
+            # still seed by hand, and a booting API beats a crash loop.
+            logger.exception("AUTO_SEED failed; the service will start unseeded")
     yield
 
 
@@ -108,4 +152,5 @@ def public_config() -> dict:
         "cors_allow_origins": settings.cors_allow_origins(),
         "cors_allow_origin_regex": settings.cors_allow_origin_regex(),
         "frontend_url_configured": bool(settings.frontend_url),
+        "auto_seed": settings.auto_seed,
     }

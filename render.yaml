@@ -42,6 +42,13 @@ services:
         value: "3.11.6"
       - key: PYTHONUNBUFFERED
         value: "1"
+      # Load the reference data on first boot if the database is empty. On by
+      # default here because Render's free plan has no Shell, so there is
+      # otherwise nowhere to run "python -m app.etl". It is idempotent and
+      # short-circuits on a populated database. Set to "false" to manage
+      # seeding yourself.
+      - key: AUTO_SEED
+        value: "true"
       # Set this AFTER the Vercel deploy exists, to the Vercel production URL.
       # With no FRONTEND_URL in production the CORS allowlist is empty on
       # purpose, so the API answers nothing until this is set.

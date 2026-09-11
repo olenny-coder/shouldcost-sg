@@ -143,7 +143,41 @@ for day 25, because the database is deleted on day 30.
 6. The first build starts. It may fail its health check if the database is empty - that is expected,
    because the next step seeds it.
 
-### 3c. Seed the database
+### 3c. Seeding
+
+**On the free Render plan there is no Shell tab**, so the ETL cannot be run from the dashboard.
+```render.yaml``` therefore sets ```AUTO_SEED=true```: the service loads the reference data
+itself on first boot, if and only if the database is empty.
+
+That means **you may not have to do anything**. The first successful deploy seeds itself. Confirm
+with:
+
+```bash
+curl "https://<your-service>.onrender.com/api/indices/regions?country=IN"
+```
+
+Twelve Indian cities means it worked. ```[]``` means it did not - check the deploy log for a line
+beginning ```AUTO_SEED:```.
+
+To seed deliberately instead, set ```AUTO_SEED=false``` and use one of these:
+
+1. **Render Shell** (paid plans only): ```cd backend 2>/dev/null; python -m app.etl```
+2. **From your machine**:
+
+   ```powershell
+   .\tools\seed_remote.ps1
+   ```
+
+   It prompts for the connection string with the input hidden, seeds that database, and verifies
+   through the deployed API. Pass ```-ApiBase https://<your-service>.onrender.com```
+   to point it at a different service.
+
+> **Do not run ```python -m app.etl``` in a plain shell without setting ```DATABASE_URL```.**
+> With no ```DATABASE_URL``` the app falls back to local SQLite, so the command succeeds, prints
+> correct-looking row counts, and writes to ```backend/shouldcost.db``` on your machine. Production
+> stays empty and nothing tells you. ```AUTO_SEED``` exists so that step is not needed at all.
+
+#### The manual route (kept for reference)
 
 Render dashboard -> **shouldcost-backend** -> **Shell** tab:
 
