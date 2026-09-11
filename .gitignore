@@ -1,0 +1,33 @@
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.venv/
+.venv*/
+venv/
+*.egg-info/
+
+# Local database (SQLite). Production uses Render PostgreSQL.
+*.db
+*.sqlite3
+
+# Environment / secrets - never commit real values
+.env
+.env.local
+.env.*.local
+
+# Node / Vite
+node_modules/
+dist/
+dist-ssr/
+.vite/
+npm-debug.log*
+
+# Editors / OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# Exported benchmark artefacts
+exports/

@@ -1,0 +1,38 @@
+# Local production-like stack: Postgres + the backend image.
+#
+#   docker compose up --build
+#   docker compose exec backend python -m app.etl
+#
+# This is how you exercise the POSTGRES code path locally, which is the one
+# Render actually runs. SQLite and Postgres are not the same database.
+services:
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: shouldcost
+      POSTGRES_PASSWORD: shouldcost
+      POSTGRES_DB: shouldcost
+    ports:
+      - "55432:5432"
+    volumes:
+      - shouldcost-pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U shouldcost -d shouldcost"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  backend:
+    build: ./backend
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgresql://shouldcost:shouldcost@db:5432/shouldcost
+      ENVIRONMENT: production
+      FRONTEND_URL: http://localhost:4173
+    ports:
+      - "8000:8000"
+
+volumes:
+  shouldcost-pgdata:

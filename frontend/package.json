@@ -1,0 +1,22 @@
+{
+  "name": "shouldcost-sg-frontend",
+  "private": true,
+  "version": "1.0.0",
+  "type": "module",
+  "description": "Should-cost BoQ benchmarking UI for the Singapore construction market",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview --port 4173"
+  },
+  "dependencies": {
+    "axios": "^1.7.9",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
+    "recharts": "^2.15.0"
+  },
+  "devDependencies": {
+    "@vitejs/plugin-react": "^4.3.4",
+    "vite": "^5.4.11"
+  }
+}
