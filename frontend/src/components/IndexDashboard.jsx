@@ -124,6 +124,11 @@ export default function IndexDashboard(props) {
   const freshness = props.freshness || null;
   const bridgeMode = props.bridgeMode || 'auto';
   const preferredKind = (freshness && freshness.bridge_preference) || 'none';
+  // An API older than this UI has no producer side at all. Read every producer field
+  // through these, so a stale backend degrades to "none published" instead of
+  // throwing on an undefined property.
+  const ppiSeriesList = (freshness && freshness.ppi_series_list) || [];
+  const ppiAvailable = !!(freshness && freshness.ppi_series_available);
 
   const cpiData = useMemo(function () {
     return cpiRows
@@ -208,13 +213,12 @@ export default function IndexDashboard(props) {
         <div className="tile">
           <div className="tile-label">Producer index used</div>
           <div className="tile-value">
-            {freshness && freshness.ppi_series_available
-              ? (freshness.ppi_latest_month || 'n/a')
-              : 'none'}
+            {ppiAvailable ? (freshness.ppi_latest_month || 'n/a') : 'none'}
           </div>
           <div className="tile-sub">
-            {freshness && freshness.ppi_series_available
+            {ppiAvailable
               ? freshness.ppi_series_name + (freshness.ppi_base_year ? ' (base ' + freshness.ppi_base_year + ' = 100)' : '')
+
               : 'no producer series for this market - the bridge falls back to the consumer index'}
           </div>
         </div>
@@ -546,16 +550,15 @@ export default function IndexDashboard(props) {
 
       <h3>
         Producer price index
-        {freshness && freshness.ppi_series_available ? ' (' + freshness.ppi_series_name + ')' : ''}
+        {ppiAvailable ? ' (' + freshness.ppi_series_name + ')' : ''}
         {' - '}{country.name}
       </h3>
       <p className="muted small">
         {ppiRows.length
           ? 'This is what the bridge reaches for first: a producer price index measures what '
             + 'manufacturers and utilities charge for the commodity baskets a construction rate is '
-            + 'made of. India publishes ' + (freshness ? freshness.ppi_series_list.length : ppiRows.length)
-            + ' construction-relevant baskets monthly, base 2022-23 = 100; the preferred one is charted '
-            + 'and the rest are listed below.'
+            + 'made of. ' + ppiSeriesList.length + ' construction-relevant basket(s) are loaded, monthly, '
+            + 'base 2022-23 = 100; the preferred one is charted and the rest are listed below.'
           : 'This market publishes no machine-readable producer price index at commodity level. '
             + 'Singapore\u2019s 1-digit Domestic Supply Price Index is annual, which is too coarse to '
             + 'carry a quarterly observation, so the bridge falls back to the consumer index below. '
@@ -593,7 +596,7 @@ export default function IndexDashboard(props) {
           </div>
         </div>
       ) : null}
-      {freshness && freshness.ppi_series_list.length ? (
+      {ppiSeriesList.length ? (
         <div className="table-scroll">
           <table className="data-table compact">
             <thead>
@@ -603,7 +606,7 @@ export default function IndexDashboard(props) {
               </tr>
             </thead>
             <tbody>
-              {freshness.ppi_series_list.map(function (row) {
+              {ppiSeriesList.map(function (row) {
                 return (
                   <tr key={row.series_name}>
                     <td><span className="section-pill">{row.series_name}</span></td>
