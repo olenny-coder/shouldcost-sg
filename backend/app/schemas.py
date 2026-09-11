@@ -78,15 +78,22 @@ class RegionalFactorOut(ORMModel):
 
 
 class PricePointOut(ORMModel):
-    """One monthly consumer price index observation.
+    """One monthly producer or consumer price index observation.
 
     These are REAL published values for both markets, and they are what the engine
-    uses to carry a stale index observation forward to the tender quarter.
+    uses to carry a stale construction index observation forward to the tender
+    quarter. Producer indices take precedence over consumer ones.
     """
 
     id: int
     country: str
+    # PPI or CPI. Producer indices come first because they measure what is
+    # actually bought for construction; see the PriceSeries model.
+    kind: str = "CPI"
     series_name: str
+    title: str = ""
+    # The SMM2 / IS 1200 sections this commodity basket feeds.
+    scope_sections: str = ""
     month: str
     base_year: int
     base_value: float
