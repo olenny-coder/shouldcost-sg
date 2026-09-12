@@ -117,18 +117,76 @@ function Check([string]$Path, [string]$Label, [int]$Expected) {
     }
 }
 
-Check '/api/indices/tpi?country=SG'                'SG indexes'  100
-Check '/api/indices/regions?country=IN'            'IN regions'   10
-Check '/api/indices/benchmark-rates?country=SG'    'rate library' 10
+# Singapore has FOUR index series (BCA, HDB, RLB, AECOM) x 8 quarters = 32 rows. This
+# threshold used to read 100, which no seed in this repository has ever produced, so it
+# failed a perfectly good reseed. India has 94: six WPI materials series x 13 quarters
+# (78, real) plus CPWD and NBO x 8 quarters (16, indicative).
+Check '/api/indices/tpi?country=SG'                'SG indexes'   32
+Check '/api/indices/tpi?country=IN'                'IN indexes'   94
+Check '/api/indices/regions?country=IN'            'IN regions'   12
+# ONE row per section per market. More than that means a stale library is loaded beside
+# the current one - see the note on load_benchmark_rates in app/etl.py.
+Check '/api/indices/benchmark-rates?country=SG'    'SG rates'     10
+Check '/api/indices/benchmark-rates?country=IN'    'IN rates'     10
 Check '/api/boq?country=SG'                        'SG samples'    1
-# The price series are the bridge input: producer baskets for India, the consumer
-# index for both. The default series must be present, or the bridge cannot run.
+# The price series are the bridge input: producer baskets for India, the consumer index
+# for both. The default series must be present, or the bridge cannot run at all.
 Check '/api/indices/price-series?country=IN&series=PPI-ALL'  'IN PPI'  40
 Check '/api/indices/price-series?country=SG&series=CPI-ALL'  'SG CPI'  55
 
 Write-Host ''
+
+# The rate library must hold exactly one row per section, or the engine is choosing
+# between a current rate and a stale one. It picks by confidence, so a stale 'medium'
+# row beats a current 'low' one - which is how the deployed database ended up pricing
+# Singapore Concrete at the old invented 145.00 instead of the SOR-derived 140.53.
+foreach ($country in 'SG', 'IN') {
+    try {
+        # Assign first, then wrap: an inline @(Invoke-RestMethod ...) with a concatenated
+        # URI is parsed as a single element, which silently disabled this check.
+        $fetched = Invoke-RestMethod -Uri ($ApiBase + '/api/indices/benchmark-rates?country=' + $country) -TimeoutSec 60
+        $rows = @($fetched)
+        $dupes = @($rows | Group-Object smm2_section | Where-Object { $_.Count -gt 1 })
+        if ($dupes.Count -gt 0) {
+            Write-Host ('  ' + $country + ' rate library: ' + $dupes.Count + ' section(s) carry more than one row') -ForegroundColor Red
+            Write-Host ('    ' + (($dupes | ForEach-Object { $_.Name }) -join ', ')) -ForegroundColor Red
+            Write-Host '    A stale row is sitting beside the current one. Re-run this script.' -ForegroundColor Red
+            $script:failed = $true
+        }
+        else {
+            $derivedRows = @($rows | Where-Object { -not $_.is_placeholder })
+            $retainedRows = @($rows | Where-Object { $_.is_placeholder })
+            $derived = $derivedRows.Count
+            $retained = $retainedRows.Count
+            Write-Host ('  ' + $country + ' rate library: one row per section, ' + $derived + ' derived / ' + $retained + ' retained') -ForegroundColor Green
+        }
+    }
+    catch {
+        Write-Host ('  ' + $country + ' rate library check failed - ' + $_) -ForegroundColor Red
+        $script:failed = $true
+    }
+}
+
+# The producer index must actually be loaded for India, or every bridged rate falls back
+# to the weaker consumer proxy.
+try {
+    $cov = Invoke-RestMethod -Uri ($ApiBase + '/api/indices/coverage?country=IN') -TimeoutSec 60
+    if ($cov.producer_series_count -lt 16 -or $cov.carry_index_kind -ne 'producer') {
+        Write-Host ('  IN coverage: producer_series_count=' + $cov.producer_series_count + ', carried by ' + $cov.carry_index_kind + ' - expected 16 and producer') -ForegroundColor Red
+        $script:failed = $true
+    }
+    else {
+        Write-Host ('  IN coverage: ' + $cov.producer_series_count + ' producer baskets, rates carried by ' + $cov.carry_index_series) -ForegroundColor Green
+    }
+}
+catch {
+    Write-Host ('  IN coverage check failed - ' + $_) -ForegroundColor Red
+    $script:failed = $true
+}
+
+Write-Host ''
 if ($failed) {
-    Write-Host 'Some checks failed. The database may still be empty - re-run and read the ETL output above.' -ForegroundColor Red
+    Write-Host 'Some checks failed. The lines above name what is wrong.' -ForegroundColor Red
     exit 1
 }
 Write-Host 'Seed verified. The deployed app now has data.' -ForegroundColor Green

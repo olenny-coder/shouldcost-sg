@@ -193,8 +193,53 @@ def load_materials(session: Session, df: pd.DataFrame) -> int:
 
 
 def load_benchmark_rates(session: Session, df: pd.DataFrame) -> int:
+    """Load the rate library, REPLACING whatever this country had.
+
+    The natural key includes the description, the source and the base year, because two
+    rates for one section are legitimate (a retained estimate alongside a published one).
+    But that also means a row whose wording, source or base year changes does not match
+    the old row - it is inserted next to it, and the stale row survives. The engine then
+    picks between them by confidence, so an old invented rate with a higher confidence
+    would beat a new published one.
+
+    The seed CSV is therefore treated as the authority for the countries it contains:
+    anything not in the file is removed, so refreshing the library actually refreshes it.
+    """
+    records = df.to_dict("records")
+    keep: set[tuple[str, str, str, str, int, str]] = set()
+    for row in records:
+        keep.add(
+            (
+                _country(row.get("country")),
+                row["smm2_section"].strip(),
+                row["description"].strip(),
+                row["unit"].strip(),
+                int(row["base_year"]),
+                row["source"].strip(),
+            )
+        )
+
+    removed = 0
+    for country in {key[0] for key in keep}:
+        for existing in session.scalars(
+            select(BenchmarkRate).where(BenchmarkRate.country == country)
+        ):
+            identity = (
+                existing.country,
+                existing.smm2_section,
+                existing.description,
+                existing.unit,
+                existing.base_year,
+                existing.source,
+            )
+            if identity not in keep:
+                session.delete(existing)
+                removed += 1
+    if removed:
+        session.flush()
+
     inserted = 0
-    for row in df.to_dict("records"):
+    for row in records:
         country = _country(row.get("country"))
         key = {
             "country": country,
@@ -221,6 +266,8 @@ def load_benchmark_rates(session: Session, df: pd.DataFrame) -> int:
             "replace_with": row.get("replace_with", "").strip(),
         }
         inserted += _upsert(session, BenchmarkRate, key, values)
+    if removed:
+        session.commit()
     return inserted
 
 

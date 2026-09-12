@@ -678,16 +678,29 @@ def excluded_sections(scope_exclusions: str, present_sections) -> dict[str, str]
 def load_benchmark_rates(
     session: Session, country: str = DEFAULT_COUNTRY
 ) -> dict[str, BenchmarkRate]:
-    """Index benchmark rates by section for one country, preferring the highest confidence."""
+    """Index benchmark rates by section for one country, preferring the highest confidence.
+
+    Ties are broken deterministically rather than by whatever order the database returns:
+    a row that states its own base quarter wins over one that does not (it is the more
+    specific statement of what the rate means), and after that the more recent base year
+    wins. Without this, two rows in one section and the same confidence would make the
+    benchmark depend on row order.
+    """
     code = (country or DEFAULT_COUNTRY).strip().upper()
     rows = list(session.scalars(select(BenchmarkRate).where(BenchmarkRate.country == code)).all())
+
+    def rank(row: BenchmarkRate) -> tuple[int, int, int]:
+        return (
+            CONFIDENCE_ORDER.get(row.confidence, 9),
+            # A stated base quarter is more specific than "somewhere in a base year".
+            0 if (row.base_quarter or "").strip() else 1,
+            -int(row.base_year or 0),
+        )
+
     chosen: dict[str, BenchmarkRate] = {}
     for row in rows:
         current = chosen.get(row.smm2_section)
-        if current is None:
-            chosen[row.smm2_section] = row
-            continue
-        if CONFIDENCE_ORDER.get(row.confidence, 9) < CONFIDENCE_ORDER.get(current.confidence, 9):
+        if current is None or rank(row) < rank(current):
             chosen[row.smm2_section] = row
     return chosen
 

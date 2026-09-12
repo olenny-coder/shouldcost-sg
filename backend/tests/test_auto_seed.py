@@ -11,7 +11,7 @@ from __future__ import annotations
 import os
 
 import pytest
-from sqlalchemy import func, select
+from sqlalchemy import delete, func, select
 
 import app.config as config_module
 import app.db as db_module
@@ -72,6 +72,95 @@ def test_auto_seed_is_off_by_default(monkeypatch, raw) -> None:
         assert config_module.Settings().auto_seed is False
     finally:
         config_module.reset_settings_cache()
+
+
+# --------------------------------------------------------------------------- #
+# Refreshing the rate library
+# --------------------------------------------------------------------------- #
+def test_the_rate_library_is_replaced_not_accumulated(isolated_database) -> None:
+    """A changed description or source must REPLACE the old row, not sit beside it.
+
+    The natural key of benchmark_rates includes the description, the source and the base
+    year, because two rates for one section are legitimate. The cost of that is that
+    rewording a row - which is exactly what rebuilding the library from the BCA and CPWD
+    schedules did - leaves the old row orphaned rather than updated. The engine then picks
+    between them by confidence, and the deployed database ended up preferring an OLD
+    invented rate over the new published one because the old row was 'medium' and the new
+    one 'low' for Singapore Concrete.
+    """
+    from app.etl import load_benchmark_rates, run_etl
+    from app.models import BenchmarkRate
+
+    db_module.init_db()
+    run_etl()
+
+    session = db_module.get_session_factory()()
+    try:
+        # Simulate the pre-refresh library: an extra row per section, worded differently,
+        # carrying a HIGHER confidence than the real one.
+        for section, rate in (("Concrete", 145.0), ("Reinforcement", 1150.0)):
+            session.add(
+                BenchmarkRate(
+                    country="SG", smm2_section=section, classification_standard="SMM2",
+                    description=f"Legacy invented rate for {section}", unit="m3" if section == "Concrete" else "tonne",
+                    base_rate=rate, currency="SGD", base_year=2010, base_quarter="",
+                    source="Legacy source string", source_url="", source_date="",
+                    scope_inclusions="", scope_exclusions="", confidence="medium",
+                    is_placeholder=True, provenance_note="legacy", replace_with="# TODO: legacy",
+                )
+            )
+        session.commit()
+        assert session.scalar(
+            select(func.count()).select_from(BenchmarkRate)
+        ) == 22, "the legacy rows must be present before the refresh"
+        session.close()
+
+        # Re-running the ETL is what a reseed does.
+        run_etl()
+    finally:
+        session.close()
+
+    session = db_module.get_session_factory()()
+    try:
+        assert session.scalar(select(func.count()).select_from(BenchmarkRate)) == 20
+        concrete = list(
+            session.scalars(
+                select(BenchmarkRate).where(
+                    BenchmarkRate.country == "SG", BenchmarkRate.smm2_section == "Concrete"
+                )
+            )
+        )
+        assert len(concrete) == 1, "the stale row must be gone, not merely outranked"
+        assert concrete[0].base_rate == pytest.approx(140.53)
+        assert concrete[0].base_quarter == "2026Q2"
+    finally:
+        session.close()
+
+
+def test_a_tie_in_confidence_is_broken_deterministically(session) -> None:
+    """Two rows, same confidence: the one stating its own base quarter must win."""
+    from app.benchmark import load_benchmark_rates
+    from app.models import BenchmarkRate
+
+    for rate, base_quarter, base_year in ((999.0, "", 2010), (111.0, "2026Q2", 2026)):
+        session.add(
+            BenchmarkRate(
+                country="ZZ", smm2_section="Concrete", classification_standard="SMM2",
+                description=f"tie breaker candidate {base_quarter}", unit="m3",
+                base_rate=rate, currency="SGD", base_year=base_year, base_quarter=base_quarter,
+                source="test fixture", source_url="", source_date="",
+                scope_inclusions="", scope_exclusions="", confidence="medium",
+                is_placeholder=True, provenance_note="", replace_with="",
+            )
+        )
+    session.commit()
+    try:
+        chosen = load_benchmark_rates(session, country="ZZ")
+        assert chosen["Concrete"].base_rate == pytest.approx(111.0)
+        assert chosen["Concrete"].base_quarter == "2026Q2"
+    finally:
+        session.execute(delete(BenchmarkRate).where(BenchmarkRate.country == "ZZ"))
+        session.commit()
 
 
 # --------------------------------------------------------------------------- #
