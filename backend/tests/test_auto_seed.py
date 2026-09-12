@@ -16,6 +16,8 @@ from sqlalchemy import delete, func, select
 import app.config as config_module
 import app.db as db_module
 
+from conftest import seed_row_count
+
 
 @pytest.fixture()
 def isolated_database(tmp_path):
@@ -224,7 +226,11 @@ def test_seeding_is_repeatable_and_does_not_duplicate(isolated_database) -> None
     assert second["inserted"]["material_prices"] == 0
     assert _count(TPISeries) == 126
     assert _count(MaterialPrice) == 180
-    assert _count(BoQItem) == 40
+    # The two demonstration bills are generated from the schedules of rates, so their
+    # combined length is read from the files rather than hardcoded.
+    assert _count(BoQItem) == (
+        seed_row_count("sample_boq.csv") + seed_row_count("sample_boq_india.csv")
+    )
 
 
 def test_an_unreadable_table_does_not_crash_the_boot(isolated_database) -> None:

@@ -7,6 +7,8 @@ import io
 import pytest
 from sqlalchemy import select
 
+from conftest import seed_row_count
+
 from app.benchmark import build_benchmark, resolve_tpi
 from app.classifier import classify
 from app.countries import COUNTRIES, country_codes, get_country
@@ -123,7 +125,7 @@ def test_india_sample_boq_is_seeded_and_in_rupees(session) -> None:
     upload = session.get(BoQUpload, upload_id)
     assert upload.country == "IN"
     assert upload.currency == "INR"
-    assert len(_items(session, upload_id)) == 20
+    assert len(_items(session, upload_id)) == seed_row_count(IN_SAMPLE)
 
 
 def test_india_benchmark_uses_cpwd_index_and_reports_inr(session) -> None:

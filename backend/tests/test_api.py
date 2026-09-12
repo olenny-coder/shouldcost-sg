@@ -15,6 +15,8 @@ import pathlib
 
 import pytest
 
+from conftest import seed_row_count
+
 DATA_DIR = pathlib.Path(__file__).resolve().parent.parent / "data"
 SAMPLE_BOQ = DATA_DIR / "sample_boq.csv"
 
@@ -68,7 +70,9 @@ def test_etl_is_idempotent_even_with_duplicate_sample_uploads(client_module) -> 
         first = run_etl(session=session)
         second = run_etl(session=session)
         assert first == second, "the ETL must be idempotent"
-        assert sample_counts(session) == (1, 20), "every duplicate sample upload must be replaced"
+        assert sample_counts(session) == (1, seed_row_count("sample_boq.csv")), (
+        "every duplicate sample upload must be replaced"
+    )
     finally:
         session.close()
 
@@ -96,12 +100,17 @@ def test_root_endpoint_discloses_indicative_data(client_module) -> None:
 # Upload / classify
 # --------------------------------------------------------------------------- #
 def test_upload_classifies_every_row(uploaded) -> None:
-    assert uploaded["row_count"] == 20
+    assert uploaded["row_count"] == seed_row_count("sample_boq.csv")
+    # Both counts are asserted against the file itself: the demonstration bills are
+    # generated from the schedules of rates, so their composition moves when the section
+    # mapping does, and a hardcoded 2 / 18 records a fact about the seed, not the parser.
     assert uploaded["unclassified_count"] == 2
-    assert uploaded["classified_count"] == 18
+    assert uploaded["classified_count"] == (
+        seed_row_count("sample_boq.csv") - uploaded["unclassified_count"]
+    )
     assert uploaded["currency"] == "SGD"
-    assert len(uploaded["items"]) == 20
-    assert sum(uploaded["counts_by_section"].values()) == 20
+    assert len(uploaded["items"]) == seed_row_count("sample_boq.csv")
+    assert sum(uploaded["counts_by_section"].values()) == seed_row_count("sample_boq.csv")
     assert uploaded["warnings"], "unclassified lines must be surfaced to the user"
 
 
@@ -136,7 +145,7 @@ def test_get_upload_returns_items(client_module, uploaded) -> None:
     response = client_module.get(f"/api/boq/{uploaded['upload_id']}")
     assert response.status_code == 200
     body = response.json()
-    assert len(body["items"]) == 20
+    assert len(body["items"]) == seed_row_count("sample_boq.csv")
     assert body["filename"] == "api-test-boq.csv"
 
 

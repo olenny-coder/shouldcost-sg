@@ -7,7 +7,7 @@ import io
 import pytest
 from sqlalchemy import select
 
-from app.benchmark import build_benchmark, compute_sensitivity
+from app.benchmark import build_benchmark, excluded_sections, compute_sensitivity
 from app.models import BoQUpload, BoQItem
 
 SAMPLE = "sample_boq.csv"
@@ -133,9 +133,19 @@ def test_an_indexed_manual_rate_is_indexed_like_a_library_rate(session) -> None:
 
 
 def test_a_scope_excluded_section_cancels_the_index_for_a_manual_rate_too(session) -> None:
-    """A supplied Piling rate is still held at base year, because BCA excludes piling."""
+    """A supplied rate for an excluded section is still held at base year.
+
+    The section is taken from the series' OWN declared exclusions rather than hardcoded as
+    Piling: the demonstration bills are generated from the schedules of rates, so which
+    sections they contain - and which of those are excluded - moves with the seed.
+    """
     base = _run(session)
-    line = [l for l in _unbenchmarked(base) if l.smm2_section == "Piling"][0]
+    present = {l.smm2_section for l in base.lines}
+    excluded = set(
+        excluded_sections(base.tpi_series_scope_exclusions, present)
+    )
+    assert excluded, "the selected series must exclude something this BoQ contains"
+    line = [l for l in _unbenchmarked(base) if l.smm2_section in excluded][0]
     after = _run(session, manual={str(line.item_id): {"base_rate": 500.0, "indexed": True}})
     row = [l for l in after.lines if l.item_id == line.item_id][0]
     assert row.scope_excluded is True

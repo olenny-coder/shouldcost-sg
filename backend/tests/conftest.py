@@ -38,6 +38,22 @@ from app.models import BoQUpload  # noqa: E402
 SAMPLE_FILENAME = "sample_boq.csv"
 
 
+def seed_row_count(filename: str) -> int:
+    """How many BoQ lines a bundled demonstration file has.
+
+    Read from the CSV rather than hardcoded: the sample bills are generated from the
+    schedules of rates (tools/build_sample_boqs.py), so their length changes whenever the
+    schedules or the section mapping do, and a hardcoded count turns that into a test
+    failure that says nothing about the code.
+    """
+    import csv
+    import io
+
+    path = pathlib.Path(__file__).resolve().parent.parent / "data" / filename
+    lines = path.read_text(encoding="utf-8-sig").splitlines()
+    return len(list(csv.DictReader(io.StringIO("\n".join(lines)))))
+
+
 @pytest.fixture(scope="session", autouse=True)
 def _prepared_database():
     init_db()
@@ -55,6 +71,10 @@ def session():
         yield db
     finally:
         db.close()
+
+
+# Importable by the test modules that need it.
+from conftest import seed_row_count  # noqa: E402,F401  (re-exported for test modules)
 
 
 @pytest.fixture()

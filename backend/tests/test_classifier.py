@@ -76,6 +76,48 @@ def test_first_match_wins_is_documented_caveat() -> None:
     assert classify("Waterproof membrane to pile cap tops").smm2_section == "Piling"
 
 
+@pytest.mark.parametrize(
+    ("description", "expected"),
+    [
+        # A real schedule line leads with its trade heading, and a keyword in the heading
+        # beats one buried in the detail - where it is usually the surround or the
+        # substrate rather than the work being measured.
+        ("Timber Formwork: Timber formwork to in-situ concrete including strutting", "Formwork"),
+        ("Metal Formwork: Metal formwork to in-situ concrete with strutting", "Formwork"),
+        ("Clay Bricks: Common Brickwork: Common clay brick laid in cement mortar", "Masonry"),
+        ("Concrete Blocks: Hollow Concrete Blockwork: Hollow concrete block laid", "Masonry"),
+        ("Reinforced Concrete: Reinforced concrete to any location - grade 25", "Concrete"),
+        ("Lean/Mass Concrete: Lean or Mass concrete binding to any location - grade 15",
+         "Concrete"),
+        # A DSR pipe item names the concrete bedding it is laid in.
+        ("Providing and laying ductile iron pipes 100mm dia laid in cement concrete",
+         "M&E Containment"),
+        ("Providing and fixing soil, waste and vent pipes (75 mm dia)", "M&E Containment"),
+        # 12 mm cement plaster of mix 1:4 ... - the first colon is inside the mix ratio.
+        ("12 mm cement plaster of mix 1:4 (1 cement : 4 fine sand)", "Plaster"),
+    ],
+)
+def test_real_schedule_vocabulary(description: str, expected: str) -> None:
+    """Wording taken from the BCA schedule and the CPWD DSR that the app must place correctly.
+
+    Before this, the generic concrete rule captured all ten Singapore formwork lines, four of
+    its masonry lines and 220 of the India services lines, none of which could then be
+    benchmarked against the section they were measured from.
+    """
+    assert classify(description, "IN" if "DSR" in description else "SG").smm2_section == expected
+
+
+def test_the_heading_pass_does_not_override_a_rule_that_should_win() -> None:
+    """A guarded rule stands down, but the heading does not hand the line to a wrong section."""
+    # "Concrete Blocks" would match the concrete rule on the heading alone; the guard lets
+    # masonry claim it instead, which is what the schedule measured.
+    assert classify("Concrete Blocks: Hollow Concrete Blockwork", "SG").smm2_section == "Masonry"
+    # A line that genuinely is concrete work is unaffected: nothing else claims it.
+    assert classify("Concrete: grade 35/20 to pile caps", "SG").smm2_section == "Concrete"
+    # Excavation keeps priority over services, because a trench for a drain is earthwork.
+    assert classify("Excavate trench for drainage pipe", "SG").smm2_section == "Excavation"
+
+
 def test_rule_table_shape() -> None:
     assert len(CLASSIFICATION_RULES) == 10
     assert set(SMM2_SECTIONS) == {
