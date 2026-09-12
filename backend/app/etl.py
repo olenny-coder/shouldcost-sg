@@ -361,6 +361,7 @@ def load_sample_boq(
                 amount=round(quantity * rate, 2),
                 smm2_section=result.smm2_section,
                 classified_by="auto",
+                sor_code=str(row.get("sor_code", "") or "").strip()[:32],
                 is_placeholder=_as_bool(row.get("is_placeholder", "true")),
                 replace_with=row.get("replace_with", "").strip(),
             )

@@ -51,7 +51,8 @@ from app.classifier import UNCLASSIFIED, classify  # noqa: E402
 
 SOR_DIR = REPO.parent / "SOR data"
 DATA = REPO / "backend" / "data"
-HEADER = ["description", "unit", "quantity", "rate", "rate_basis", "is_placeholder", "replace_with"]
+HEADER = ["sor_code", "description", "unit", "quantity", "rate", "rate_basis",
+          "is_placeholder", "replace_with"]
 
 # Same mapping as the rate library, so a bill line is always tested against the rate that
 # was derived from the same part of the same schedule.
@@ -195,7 +196,8 @@ def candidates(rows, rules, code_of, unit_of, rate_of, country):
             continue  # the app would classify this line elsewhere, so it is not a fair demo
         rate_out = rate * 1000.0 if (unit == "kg" and rules[matched][1] == "tonne") else rate
         out[matched].append(
-            {"desc": desc, "unit": rules[matched][1], "rate": rate_out, "assigned": assigned}
+            {"desc": desc, "unit": rules[matched][1], "rate": rate_out, "assigned": assigned,
+             "code": code_of(row)}
         )
     for section in out:
         out[section].sort(key=lambda i: i["rate"])
@@ -256,6 +258,10 @@ def retained_lines(country: str, session) -> list[dict]:
         base = engine_rate(session, country, section, unit, rates, tpi, region_factor)
         rate = base * (1.0 + target / 100.0)
         out.append({
+            # Deliberately blank: these sections have no line in the loaded schedule, which is
+            # exactly what sor_code blank means. The app reports them as needing input, and
+            # that is the honest signal rather than a code borrowed from another trade.
+            "sor_code": "",
             "description": description,
             "unit": unit,
             "quantity": quantity,
@@ -303,6 +309,7 @@ def build(country: str, session) -> list[dict]:
             quantity = pool[used_quantities[unit] % len(pool)]
             used_quantities[unit] += 1
             out.append({
+                "sor_code": item.get("code", ""),
                 "description": item["desc"][:400],
                 "unit": unit,
                 "quantity": quantity,
@@ -325,6 +332,7 @@ def build(country: str, session) -> list[dict]:
             break
         pick = at_quantile(outside, q)
         out.append({
+            "sor_code": pick.get("code", ""),
             "description": pick["desc"][:400], "unit": pick["unit"], "quantity": 180,
             "rate": pick["rate"], "rate_basis": f"{SERIES[country]} x {FACTOR[country]} to 2026",
             "is_placeholder": "true",
@@ -366,6 +374,7 @@ def build(country: str, session) -> list[dict]:
             break
     if mismatch:
         out.append({
+            "sor_code": mismatch.get("code", ""),
             "description": mismatch["desc"][:400], "unit": mismatch["unit"], "quantity": 220,
             "rate": mismatch["rate"], "rate_basis": f"{SERIES[country]} x {FACTOR[country]} to 2026",
             "is_placeholder": "true",

@@ -712,7 +712,7 @@ connection the backend opens at runtime is to its own database.
 | `GET` | `/api/countries` | the market registry: currency, measurement standard, credible sources |
 | `GET` | `/api/boq` | recent uploads, newest first. Query: `country`, `limit` |
 | `POST` | `/api/boq/upload` | multipart CSV/XLSX -> parse, classify, persist. Query: `country`, `currency` |
-| `GET` | `/api/boq/template` | **downloadable BoQ template.** Query: `format=csv\|xlsx`, `country` |
+| `GET` | `/api/boq/template` | **downloadable BoQ template - the whole schedule of rates for the market.** Query: `format=csv\|xlsx`, `country`. 393 BCA lines for Singapore, 1,846 CPWD DSR lines for India |
 | `GET` | `/api/boq/{upload_id}` | parsed items for an upload |
 | `PATCH` | `/api/boq/item/{item_id}` | manual reclassification; sets `classified_by = "manual"` |
 | `POST` | `/api/boq/{upload_id}/benchmark` | body `{tender_quarter, tpi_series_name, variance_threshold, region_code, index_bridge, adjustments, manual_rates}`. `index_bridge` is `cpi` (default) or `none` |
@@ -804,6 +804,33 @@ break-even drives total variance to zero, asserted by `test_break_even_drives_to
 ### Downloads
 
 Two families, both streamed from the backend:
+
+### The upload template is the schedule of rates
+
+`backend/data/sor_items.csv` (built by `tools/build_sor_items.py`) is the committed catalogue of
+every item in both schedules, and `GET /api/boq/template` serves it as a fillable bill:
+
+| column | what it is |
+|---|---|
+| `sor_code` | the schedule item code. **Blank means the analyst added the line**, so the loaded schedule has no rate for it |
+| `description` | verbatim from the schedule |
+| `section` | the app's classification, **supplied so you can filter**. Blank = a trade outside the library's ten sections |
+| `unit` | the schedule unit converted to the app's vocabulary (`sqm`->`m2`, `kg`->`t`) |
+| `quantity` | **zero**. A schedule of rates has no quantities; an untouched template therefore totals zero on purpose |
+| `rate` | the schedule's own 2026 rate, so a filled quantity analyses straight away. Every row says it is the schedule rate, not a tendered one |
+
+Of Singapore's 393 items, **170 fall in a section the library covers** and 223 do not; for India it
+is **1,155 of 1,846**. The `section` column is what makes a 1,846-row sheet navigable: filter on it
+and you have the lines the app can benchmark. The rest are trades the library has no section for -
+glazing, painting, metalwork, roofing, finishes - and they are reported as needing a manual rate
+rather than being silently dropped.
+
+A file that mixes coded and uncoded lines gets a warning naming how many are not in the schedule,
+because those are the lines that need input before the should-cost is complete. A file with no
+`sor_code` column at all is not nagged: every line is codeless, so saying so would be noise.
+
+The two bundled demonstration bills carry their schedule codes too, so a demo line traces back to the
+BCA or DSR item it was quoted from.
 
 * **BoQ template** - a ready-to-fill CSV or XLSX in the vocabulary of the selected market. The XLSX
   carries a second `Instructions` sheet listing the columns, the accepted unit spellings, and the

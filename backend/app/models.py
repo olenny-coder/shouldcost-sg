@@ -222,6 +222,10 @@ class BoQItem(Base):
     amount: Mapped[float] = mapped_column(Float, nullable=False)
     smm2_section: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
     classified_by: Mapped[str] = mapped_column(String(8), nullable=False, default="auto")
+    # The schedule-of-rates code this line was quoted from, when it came from the template.
+    # Blank means the analyst added the line, so the loaded schedule carries no rate for it
+    # and it will need a manual rate before the should-cost is complete.
+    sor_code: Mapped[str] = mapped_column(String(32), nullable=False, default="")
     is_placeholder: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     replace_with: Mapped[str] = mapped_column(Text, nullable=False, default="")
 

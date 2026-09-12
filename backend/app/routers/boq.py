@@ -40,6 +40,10 @@ COLUMN_ALIASES: dict[str, set[str]] = {
     "amount": {"amount", "total", "amount sgd", "value", "total sgd"},
     "is_placeholder": {"is placeholder"},
     "replace_with": {"replace with"},
+    # The schedule-of-rates code this line was quoted from, when it came from the template.
+    # Blank means the analyst added the line, and the loaded schedule therefore has no rate
+    # for it - which is exactly the set that needs a manual rate.
+    "sor_code": {"sor code", "schedule code", "sor item", "code"},
 }
 
 REQUIRED_FIELDS = ("raw_description", "unit", "quantity", "boq_rate")
@@ -64,6 +68,19 @@ def _as_float(value, field: str, row_number: int) -> float:
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
             detail=f"Row {row_number}: column '{field}' value {value!r} is not a number.",
         ) from exc
+
+
+def _as_text(value, limit: int = 0) -> str:
+    """A cell as text, with an empty cell staying empty.
+
+    pandas reads a blank CSV cell as NaN, and `str(nan) or ""` is the string "nan" - which
+    then gets stored as a provenance note or a schedule code. A blank cell has to mean
+    blank.
+    """
+    if value is None or (isinstance(value, float) and pd.isna(value)):
+        return ""
+    text = str(value).strip()
+    return text[:limit] if limit else text
 
 
 def _as_bool(value, default: bool = False) -> bool:
@@ -187,7 +204,8 @@ def _build_item(row, mapping: dict[str, str], row_number: int, country: str) -> 
         smm2_section=classification.smm2_section,
         classified_by="auto",
         is_placeholder=_as_bool(_row_value(row, mapping, "is_placeholder"), default=False),
-        replace_with=str(_row_value(row, mapping, "replace_with") or "").strip(),
+        replace_with=_as_text(_row_value(row, mapping, "replace_with")),
+        sor_code=_as_text(_row_value(row, mapping, "sor_code"), limit=32),
     )
 
 
@@ -286,6 +304,23 @@ async def upload_boq(
         warnings.append(
             "Some lines in this file are flagged is_placeholder = true, i.e. indicative sample "
             "data rather than a real tender."
+        )
+
+    # Lines that came from the template carry the schedule code they were quoted from. A
+    # line WITHOUT one was added by the analyst, so the loaded schedule has no rate for it
+    # and it will need a manual rate before the should-cost is complete. Only worth saying
+    # when the file actually used the template - on a plain upload every line is codeless,
+    # and "1,876 lines are not in the schedule" would be noise rather than information.
+    coded = [item for item in items if (item.sor_code or "").strip()]
+    if coded and len(coded) < len(items):
+        added = len(items) - len(coded)
+        # ... minus any the file already told us about as unclassified, which is a
+        # different problem with a different fix.
+        warnings.append(
+            f"{added} of {len(items)} line(s) are NOT in the loaded schedule of rates "
+            f"(sor_code is blank), so they came from your own bill rather than the template. "
+            f"Any that the library also cannot price - shown in the Coverage panel - need a "
+            f"manual rate before the should-cost is complete."
         )
 
     return schemas.UploadOut(

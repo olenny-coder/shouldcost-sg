@@ -329,16 +329,32 @@ def test_template_csv_downloads_and_round_trips(client_module, country) -> None:
     assert "attachment; filename=" in response.headers["content-disposition"]
     assert f"template-{country.lower()}" in response.headers["content-disposition"]
 
-    # The template must be directly uploadable - that is the whole point of it.
+    # The template is the whole schedule of rates for the market, so its length is the
+    # catalogue's length - read from the file rather than hardcoded.
+    from app.boq_template import catalogue_rows
+
+    items = catalogue_rows(country)
+    assert len(items) > 300, "the template must be the schedule, not a handful of examples"
+
+    # The template must be directly uploadable - that is the whole point of it. Every
+    # quantity is zero, so it uploads and totals zero rather than failing validation.
     upload = client_module.post(
         f"/api/boq/upload?country={country}",
         files={"file": (f"template-{country}.csv", io.BytesIO(response.content), "text/csv")},
     )
     assert upload.status_code == 201, upload.text
     body = upload.json()
-    assert body["row_count"] == 3
-    assert body["unclassified_count"] == 0, "every template example must classify"
+    assert body["row_count"] == len(items)
     assert body["currency"] == ("INR" if country == "IN" else "SGD")
+    assert all(item["sor_code"] for item in body["items"]), (
+        "every catalogue line must carry the schedule code it came from"
+    )
+
+    # The unclassified share is real, not a defect: the schedules span trades outside the
+    # library's ten sections, and those lines are exactly the ones that need a manual rate.
+    priceable = sum(1 for row in items if row[2])
+    assert body["unclassified_count"] == len(items) - priceable
+    assert body["unclassified_count"] < len(items), "some schedule items must be priceable"
 
 
 @pytest.mark.parametrize("country", ["SG", "IN"])
@@ -348,11 +364,70 @@ def test_template_xlsx_has_boq_and_instructions_sheets(client_module, country) -
     assert response.content[:2] == b"PK"
     sheets = pd.read_excel(io.BytesIO(response.content), sheet_name=None, engine="openpyxl")
     assert set(sheets) == {"BoQ", "Instructions"}
-    assert list(sheets["BoQ"].columns)[:4] == ["description", "unit", "quantity", "rate"]
-    assert len(sheets["BoQ"]) == 3
+    # sor_code first so a line can be traced to the schedule, and section next to the
+    # description so the analyst can filter to the rows the library can actually price.
+    assert list(sheets["BoQ"].columns)[:3] == ["sor_code", "description", "section"]
+    assert set(sheets["BoQ"].columns) >= {"unit", "quantity", "rate", "is_placeholder"}
+    from app.boq_template import catalogue_rows
+
+    assert len(sheets["BoQ"]) == len(catalogue_rows(country))
+    assert (sheets["BoQ"]["quantity"] == 0).all(), "an untouched template must total zero"
     instructions = sheets["Instructions"].astype(str).to_string()
     assert "HOW TO USE THIS TEMPLATE" in instructions
     assert "Measurement standard" in instructions
+    assert "FILTER ON THE section COLUMN" in instructions
+
+
+def _csv_bytes(rows: list[list]) -> bytes:
+    """Quote properly: descriptions contain commas, and an unquoted one truncates the row."""
+    import csv as _csv
+
+    buffer = io.StringIO()
+    _csv.writer(buffer, lineterminator="\n").writerows(rows)
+    return buffer.getvalue().encode("utf-8")
+
+
+def test_lines_added_outside_the_schedule_are_reported(client_module) -> None:
+    """A line with no schedule code came from the analyst, so the schedule cannot price it.
+
+    The template lists every schedule item, so a blank sor_code is exactly what "this line is
+    not in the list" looks like - and those are the lines that need a manual rate before the
+    should-cost is complete.
+    """
+    rows = [
+        ["sor_code", "description", "unit", "quantity", "rate"],
+        # From the template: carries the code it was quoted from.
+        ["III.1.2.A",
+         "Reinforced Concrete: Reinforced concrete to any location - grade 25",
+         "m3", 100, 158.09],
+        # Added by the analyst: no code, so nothing in the schedule covers it.
+        ["", "Curtain walling to atrium, aluminium and glass, including fixings",
+         "m2", 240, 980.00],
+    ]
+    upload = client_module.post(
+        "/api/boq/upload?country=SG",
+        files={"file": ("mixed.csv", io.BytesIO(_csv_bytes(rows)), "text/csv")},
+    )
+    assert upload.status_code == 201, upload.text
+    body = upload.json()
+    assert [i["sor_code"] for i in body["items"]] == ["III.1.2.A", ""]
+    assert any("NOT in the loaded schedule of rates" in w for w in body["warnings"])
+    assert any("1 of 2" in w for w in body["warnings"])
+
+
+def test_a_plain_upload_without_codes_is_not_nagged(client_module) -> None:
+    """With no sor_code column at all, every line is codeless - saying so would be noise."""
+    rows = [
+        ["description", "unit", "quantity", "rate"],
+        ["Sawn timber formwork to soffits of suspended slabs", "m2", 500, 45.00],
+        ["Cement and sand plaster to internal walls, 20mm thick", "m2", 300, 25.00],
+    ]
+    upload = client_module.post(
+        "/api/boq/upload?country=SG",
+        files={"file": ("plain.csv", io.BytesIO(_csv_bytes(rows)), "text/csv")},
+    )
+    assert upload.status_code == 201, upload.text
+    assert not any("NOT in the loaded schedule" in w for w in upload.json()["warnings"])
 
 
 def test_template_rejects_an_unknown_country(client_module) -> None:

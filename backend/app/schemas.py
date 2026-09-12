@@ -161,6 +161,8 @@ class BoQItemOut(ORMModel):
     amount: float
     smm2_section: str
     classified_by: Literal["auto", "manual"]
+    # The schedule-of-rates code this line was quoted from; blank when the analyst added it.
+    sor_code: str = ""
     is_placeholder: bool
     replace_with: str = ""
 
