@@ -59,8 +59,26 @@ import pandas as pd
 from .classifier import SMM2_SECTIONS, UNCLASSIFIED, classify
 from .countries import Country, get_country
 
-HEADERS = ["sor_code", "description", "section", "unit", "quantity", "rate",
-           "is_placeholder", "replace_with"]
+HEADERS = [
+    "sor_code", "description", "section",
+    # UOM is the unit the RATE is per, and it is the column the parser reads (it accepts
+    # "unit" and "uom" as the same thing). published_uom is what the schedule itself
+    # measured, so a conversion is visible rather than silent; uom_note says so in words
+    # and flags the rows the app cannot compare at all.
+    "UOM", "published_uom", "uom_note",
+    "quantity", "rate", "currency",
+    "is_placeholder", "replace_with",
+]
+
+# The five UOMs the app compares, what each means, and the published spellings each one
+# absorbs. Shown in the instructions sheet as a legend so "m2" is never a guess.
+UOM_LEGEND: tuple[tuple[str, str, str], ...] = (
+    ("m", "linear metre", "m, metre, lm, rm, running metre"),
+    ("m2", "square metre", "m2, sqm, square metre, m^2"),
+    ("m3", "cubic metre", "m3, cum, cubic metre, m^3"),
+    ("t", "tonne", "t, tonne, ton, mt, kg (converted: 1 kg = 0.001 t)"),
+    ("item", "number, or a lump sum", "item, no, nos, nr, each, sum, lsum"),
+)
 
 CATALOGUE = Path(__file__).resolve().parent.parent / "data" / "sor_items.csv"
 
@@ -73,8 +91,8 @@ NO_RATE_TODO = (
     "rate and set quantity; until you do, this row is a description with no price."
 )
 UNIT_TODO = (
-    "# TODO: the schedule measures this item in a unit the app cannot compare (see the unit "
-    "column). Re-measure it in m, m2, m3, t or item, or supply a manual rate in the app's "
+    "# TODO: the schedule measures this item in a unit the app cannot compare (see UOM and "
+    "uom_note). Re-measure it in m, m2, m3, t or item, or supply a manual rate in the app's "
     "Coverage panel; otherwise the line is reported as a unit mismatch."
 )
 
@@ -228,6 +246,28 @@ def _todo_for(item: SorItem) -> str:
     return RATE_TODO
 
 
+def _uom_note(item: SorItem) -> str:
+    """Say, per row, what the UOM is and where it came from."""
+    if not item.published_unit.strip() and not item.unit.strip():
+        return (
+            "NO UOM: the schedule states no unit for this item, so there is nothing to convert. "
+            "Set one of m, m2, m3, t, item before uploading, or the row is rejected."
+        )
+    if not item.unit_comparable:
+        return (
+            f"NOT COMPARABLE: the schedule measures this item in '{item.published_unit}'. The app "
+            f"compares m, m2, m3, t and item only - re-measure it, or supply a manual rate."
+        )
+    if not item.unit.strip():
+        return "NO UOM: the schedule states no unit for this item. Set one of m, m2, m3, t, item."
+    if _normalise(item.unit) == _normalise(item.published_unit or ""):
+        return ""
+    return (
+        f"converted from the schedule's '{item.published_unit}' to the app's '{item.unit}', and the "
+        f"rate was converted with it"
+    )
+
+
 def _item_rows(country: Country) -> list[list]:
     rows = []
     for item in catalogue(country.code):
@@ -236,9 +276,12 @@ def _item_rows(country: Country) -> list[list]:
                 item.code,
                 item.description,
                 item.section,
-                item.unit,
-                0,                                  # quantity: the analyst's to set
+                item.unit,                            # UOM the rate is per
+                item.published_unit,                  # what the schedule measured
+                _uom_note(item),
+                0,                                    # quantity: the analyst's to set
                 item.rate if item.rate is not None else 0,
+                item.currency or country.currency,    # stated per row, not implied
                 "true",
                 _todo_for(item),
             ]
@@ -246,11 +289,12 @@ def _item_rows(country: Country) -> list[list]:
     return rows
 
 
-def _instructions(country: Country) -> list[list[str]]:
+def _instructions(country: Country, library_quarter: str) -> list[list[str]]:
     items = catalogue(country.code)
     totals = catalogue_totals(country.code)
     summary = sections_summary(country.code)
     sources = totals["sources"]
+    quarter = library_quarter or "2026Q2"
     return [
         ["shouldcost BoQ template", ""],
         ["", ""],
@@ -290,6 +334,36 @@ def _instructions(country: Country) -> list[list[str]]:
               "compare (litre, hour, per metre span); those rows keep the published unit and are "
               "reported as a unit mismatch, not silently dropped. Re-measure them or supply a manual "
               "rate."],
+        ["", ""],
+        ["UOM - THE UNIT YOUR RATE AND QUANTITY MUST BE IN", ""],
+        ["", "Every row states the UOM its rate is per. Fill quantity in that same UOM, and give a "
+             "rate per one of that UOM - a rate of 150 against 'm2' is 150 per square metre."],
+        ["UOM", "means / what to fill"],
+        *[[code, f"{meaning}. Accepted spellings on upload: {spellings}"]
+          for code, meaning, spellings in UOM_LEGEND],
+        ["published_uom", "What the schedule of rates itself measured for this item (sqm, cum, kg, "
+                          "metre, each, litre, hour ...). Kept so a conversion is visible."],
+        ["uom_note", "Explains the conversion, or says NOT COMPARABLE for the "
+                     f"{totals['unit_not_comparable']} item(s) the app cannot compare. Those rows "
+                     "keep the schedule's own unit and are reported as a unit mismatch rather than "
+                     "dropped: re-measure them in m/m2/m3/t/item or supply a manual rate."],
+        ["unit_convention", country.unit_convention],
+        ["", f"Rows whose UOM is not comparable, by market: Singapore 1 of 454, India 30 of 1,876. "
+             f"Filter on uom_note to find them."],
+        ["", ""],
+        ["CURRENCY AND THE QUARTER THE RATES ARE STATED AT", ""],
+        ["Currency", f"{country.currency} ({country.currency_symbol}) - every rate in this file, and "
+                     f"every figure the app reports for this market, is in {country.currency}."],
+        ["currency column", "States it on every row, so a sheet lifted out of context still says "
+                            "which currency its rates are in. Ignored on upload: the market you "
+                            "upload to sets the currency."],
+        ["Rate basis", f"The pre-filled rates are the published schedule rate escalated to "
+                       f"{quarter} by CPI. Benchmark at {quarter} and each schedule-derived "
+                       f"section carries an index ratio of exactly 1.000 - the library as "
+                       f"published, with no escalation on top."],
+        ["Later quarters", "Still selectable. The app then carries the rates forward from "
+                           f"{quarter} with the published index and discloses the movement; "
+                           f"nothing is escalated silently."],
         ["", ""],
         ["WHERE THE RATES COME FROM", ""],
         ["", "The pre-filled rate is the published schedule rate ESCALATED TO 2026 BY CPI:"],
@@ -353,25 +427,33 @@ def template_csv_bytes(country_code: str) -> bytes:
     return buffer.getvalue().encode("utf-8")
 
 
-def template_xlsx_bytes(country_code: str) -> bytes:
+def template_xlsx_bytes(country_code: str, library_quarter: str = "") -> bytes:
     """THE template: the item list plus its instructions, in one file."""
     country = get_country(country_code)
     buffer = io.BytesIO()
     boq = pd.DataFrame(_item_rows(country), columns=HEADERS)
-    instructions = pd.DataFrame(_instructions(country))
+    instructions = pd.DataFrame(_instructions(country, library_quarter))
     with pd.ExcelWriter(buffer, engine="openpyxl") as writer:
         boq.to_excel(writer, index=False, sheet_name="BoQ")
         instructions.to_excel(writer, index=False, header=False, sheet_name="Instructions")
-        # The BoQ sheet is 450-1,900 rows; freeze the header so the columns stay readable.
+        # The BoQ sheet is 450-1,900 rows; freeze the header so the columns stay readable, and
+        # size the columns so UOM, published_uom and uom_note are actually readable.
         sheet = writer.sheets["BoQ"]
         sheet.freeze_panes = "A2"
-        sheet.column_dimensions["A"].width = 12
-        sheet.column_dimensions["B"].width = 110
-        sheet.column_dimensions["C"].width = 18
-        sheet.column_dimensions["D"].width = 8
-        sheet.column_dimensions["E"].width = 10
-        sheet.column_dimensions["F"].width = 12
-        sheet.column_dimensions["H"].width = 60
+        for column, width in (
+            ("A", 12),   # sor_code
+            ("B", 110),  # description
+            ("C", 18),   # section
+            ("D", 8),    # UOM
+            ("E", 14),   # published_uom
+            ("F", 60),   # uom_note
+            ("G", 10),   # quantity
+            ("H", 12),   # rate
+            ("I", 10),   # currency
+            ("J", 14),   # is_placeholder
+            ("K", 70),   # replace_with
+        ):
+            sheet.column_dimensions[column].width = width
     buffer.seek(0)
     return buffer.getvalue()
 

@@ -686,19 +686,24 @@ expected to agree. That spread is the report.
 Both sample BoQs are engineered so variance reporting is visibly exercised. Against the default
 view for each market:
 
-| | Singapore (BCA 2024Q4) | India (WPI-CONST 2024Q4, Delhi) |
+| | Singapore (BCA 2026Q2) | India (WPI-CONST 2026Q2, Delhi) |
 |---|---|---|
 | Lines | 25 | 22 |
-| Over +15% | 4 | 6 |
-| Under -15% | 3 | 4 |
+| Over +15% | 4 | 5 |
+| Under -15% | 3 | 8 |
 | Unclassified | 2 | 2 |
 | Unit mismatch | 1 | 1 |
 | Not benchmarked | 3 | 3 |
-| Total variance | +3.55% | +2.44% |
+| Total variance | +1.66% | -7.49% |
 
 The bills are built from real schedule lines (see "The demonstration bills are real schedule lines"),
 so those figures move whenever the schedule extracts or the rate library are refreshed. They are the
 current numbers, measured through the API rather than remembered.
+
+India reads **-7.49%** at the library quarter: the demonstration bill's rates are keener than the 2021
+DSR escalated to 2026Q2, which is what benchmarking those lines against the schedule says. The
+sensitivity view puts the same fact as a break-even: Singapore's variance turns at **+1.93%** of index
+movement (index 144.97 from 142.23), India's at **-16.63%** (index 99.16 from 118.93).
 
 Both contain Piling, so the scope-exclusion path fires in both markets.
 
@@ -827,9 +832,31 @@ the committed catalogue of every item in both schedules:
 | `sor_code` | the schedule item code. **Blank means the analyst added the line**, so the loaded schedule has no rate for it |
 | `description` | verbatim from the schedule |
 | `section` | the app's classification, **supplied so you can filter**. Blank = a trade outside the library's ten sections |
-| `unit` | the schedule unit converted to the app's vocabulary (`sqm`->`m2`, `kg`->`t`) |
+| `UOM` | **the unit the `rate` and the `quantity` are per**, in the app's own vocabulary: `m`, `m2`, `m3`, `t` or `item`. `unit`, `units` and `uom` are accepted as alternative spellings, but the sheet ships `UOM` |
+| `published_uom` | the unit the schedule itself printed, verbatim. Kept beside `UOM` so a conversion is visible instead of implied |
+| `uom_note` | blank when the two agree, otherwise it says what happened: `converted from the schedule's 'sqm' to the app's 'm2', and the rate was converted with it`, or `NOT COMPARABLE: ...`, or `NO UOM: ...` |
 | `quantity` | **zero**. A schedule of rates has no quantities; an untouched template therefore totals zero on purpose |
-| `rate` | the schedule's rate escalated to 2026 by CPI, so a filled quantity analyses straight away. Every row says it is a schedule rate, not a tendered one |
+| `rate` | the schedule's rate escalated to 2026Q2 by CPI, so a filled quantity analyses straight away. Every row says it is a schedule rate, not a tendered one |
+| `currency` | **`SGD` or `INR` on every row**, so no rate can be read as the other market's money |
+| `is_placeholder`, `replace_with` | the provenance markers hard rule 1 requires: what the row is, and what must replace it |
+
+**The unit is stated, not implied.** A rate without its unit is not a rate, and the schedules write
+their units their own way - `sqm`, `cum`, `kg`, `per metre span`, `litre`, `hour`. Every row therefore
+carries three related facts: the unit the app will compare (`UOM`), the unit the schedule printed
+(`published_uom`), and an explanation when they differ (`uom_note`). Measured on the shipped catalogue:
+
+| | Singapore | India |
+|---|---|---|
+| Rows | 454 | 1,876 |
+| `UOM` converted from the schedule's wording | 37 | 1,846 |
+| Rows the app cannot compare (`NOT COMPARABLE`, unit carried verbatim) | 0 | 30 (`litre`, `per bag`, `cm per metre`, `per letter per cm height`, ...) |
+| Rows whose schedule states no unit at all (`NO UOM`, cell left empty) | 1 | 0 |
+
+A unit the app cannot compare is never silently converted or coerced into a comparable one, and a row
+the schedule gives no unit for is **left empty rather than filled with a guess** - both are flagged in
+words and both are excluded from benchmarking rather than quietly compared. The `Instructions` sheet
+carries the same legend (`m`, `m2`, `m3`, `t`, `item` with their accepted spellings) under the heading
+*UOM - THE UNIT YOUR RATE AND QUANTITY MUST BE IN*.
 
 **Every description the extracts carry is listed** - 454 for Singapore and 1,876 for India, 2,330 in
 total. An earlier revision dropped the rows it could not price, which silently removed 60 Singapore
@@ -847,14 +874,49 @@ as needing a manual rate rather than being silently dropped.
 
 **Where the pre-filled rates come from**, stated on the instructions sheet as well:
 
-| market | source | escalation |
-|---|---|---|
-| Singapore | BCA Schedule of Rates, May 2022 | x 1.171 (cumulative CPI 2022 to 2026) |
-| India | CPWD Delhi Schedule of Rates 2021 Vol-II | x 1.2364 (cumulative CPI 2021 to 2026) |
+| market | source | escalation | stated at | currency |
+|---|---|---|---|---|
+| Singapore | BCA Schedule of Rates, May 2022 | x 1.171 (cumulative CPI 2022 to 2026) | 2026Q2 | SGD |
+| India | CPWD Delhi Schedule of Rates 2021 Vol-II | x 1.2364 (cumulative CPI 2021 to 2026) | 2026Q2 | INR |
 
 Both extracts carry the same caveat - *validate with current market quotations* - and the template
 repeats it. The escalation is the same technique the app uses to carry a stale index to the tender
 quarter, disclosed for the same reason.
+
+### The quarter and the currency the rates are stated at
+
+The rates above are not "somewhere in 2026": every SOR-derived library row carries a `base_quarter`,
+and for both markets it is **2026Q2**. `/api/countries` reports it per market, with the currency and the
+counts that make it checkable rather than asserted:
+
+| field | Singapore | India |
+|---|---|---|
+| `library_quarter` | 2026Q2 | 2026Q2 |
+| `library_default_tender_quarter` | 2026Q2 | 2026Q2 |
+| `library_sections_stated` | 7 of 10 | 4 of 10 |
+| `library_sections_retained` | 3 (older base, still escalated) | 6 (older base, still escalated) |
+| `library_currency` | SGD | INR |
+
+**2026Q2 is therefore the benchmark quarter the app opens on**, and the frontend treats it as a floor
+for its defaults: an upload saved before that quarter existed - or a market switch - cannot open the app
+on an older quarter and escalate a schedule rate *backwards* without saying so. The analyst can still
+pick any quarter deliberately; the selector does not fight a choice, and the rate-basis line then reads
+*"benchmarking at 2026Q3 instead carries every library rate from 2026Q2 to 2026Q3 by the index ratio
+between them, so each priced line takes one more modelled step."*
+
+Benchmarking at the library quarter is materially different from benchmarking at an earlier one, and
+that difference is the whole point of stating the quarter: at 2026Q2 the index ratio applied to a
+library-stated rate is **exactly 1.000** (measured: `tpi_ratio = 1.0`, `rate_base_quarter = 2026Q2` on
+both markets' seeded samples), so the rate is used as published. The *index comparison* is still
+bridged - the last published BCA observation is 2024Q4, so the index itself is carried forward to
+2026-06 with CPI-ALL (x1.021772, 139.20 -> 142.2307) - but no rate is escalated a second time.
+
+The rate-basis line in the benchmark panel states this in one sentence per market, and it changes with
+the selected quarter: at 2026Q2 it reads *"prices the schedule rates as they are published: the index
+ratio from the library quarter is 1.000"* (`LIBRARY AS PUBLISHED`), and at any other quarter it reads
+*"carries every library rate from 2026Q2 to <quarter> by the index ratio between them"*
+(`DERIVED - RATE ESCALATED FROM THE LIBRARY`). The upload panel states the same basis before you even
+download the template, including the section counts and the source date.
 
 A file that mixes coded and uncoded lines gets a warning naming how many are not in the schedule,
 because those are the lines that need input before the should-cost is complete. A file with no
@@ -1079,8 +1141,12 @@ measures site labour.
   shows which kind of price index was used, the published value, the derived value, the month used, the
   factor and the source URL.
 * The **waterfall** carries the bridge as its own step, and the row explains in words what it is.
-* A newly uploaded BoQ is priced to the **current calendar quarter** by default, so a tender opened
-  today is priced to date. The seeded demonstration bills keep the quarter they were calibrated for.
+* A newly uploaded BoQ is priced at the **quarter its market's rate library is stated at** (2026Q2 for
+  both markets) by default, because the template's pre-filled rates are schedule rates escalated to
+  that quarter and benchmarking there applies an index ratio of exactly 1.000 rather than escalating
+  them a second time. A saved upload opens on the quarter it was last benchmarked at, but never on one
+  *older* than the library quarter: that would deflate a rate the schedule already states. Any quarter
+  remains selectable by hand, and the rate-basis line says which of the two is happening.
 
 ### Collapsible sections
 
@@ -1090,7 +1156,7 @@ Collapsing is never silent - each keeps a summary strip on screen:
 * the **Assumptions & warnings** panel (every apportioned or modelled figure stays in visible text,
   never a tooltip, but you are no longer made to scroll past the same warnings on every re-run). One
   **Collapse / Expand** control folds the body away and the choice is remembered in `localStorage`;
-  the header keeps the live counts ("6 warning(s), 5 assumption(s)") and the amber chips for
+  the header keeps the live counts ("6 warning(s), 7 assumption(s)") and the amber chips for
   *lines on an indicative seed rate*, *index carried forward with PPI* and *index adjusters active*,
   with a one-click link back to the full text. The **Warnings** and **Assumptions** lists also collapse independently.
 * the **Classification rules** table (the effective rule table for the selected market). Collapsed,
@@ -1189,34 +1255,47 @@ production bundle (`vite preview`) in headless Chrome and asserting on the rende
 by inspecting screenshots. Against the seeded samples:
 
 ```
-DESKTOP - Singapore, auto-loaded on boot
+DESKTOP - Singapore, auto-loaded on boot, at the quarter the rate library is stated at
   header status      : API ok | db connected | development | Singapore | SGD
   market bar         : SMM2 - Metric SI. Rates are per m, m2, m3, tonne or lump sum.
-  KPI tiles          : BoQ S$3,043,410.50 | should-cost S$2,938,980.85 | variance +S$104,429.65 (+3.55%)
+  rate basis         : "Rate basis: the rate library is stated at 2026Q2 in SGD (2026-06-30).
+                        Benchmarking at that quarter prices the schedule rates as they are
+                        published: the index ratio from the library quarter is 1.000, so they are
+                        not escalated again. LIBRARY AS PUBLISHED. 7 of the library's 10 sections
+                        state that quarter; the other 3 are retained values from an older base and
+                        are still escalated from it."
+  KPI tiles          : BoQ S$3,043,410.50 | should-cost S$2,993,828.58 | variance +S$49,581.92 (+1.66%)
                        7 of 25 breaching | 3 not benchmarked (S$34,839.00)
-                       index currency 2024Q4 - published observation covers the quarter
+                       index currency 2024Q4 - carried forward to 2026-06 with CPI-ALL (x1.0218)
   variance table     : 41 rows, 11 section subtotals
-  waterfall          : 3 recharts surfaces
-  sensitivity run    : 6 charts, 19 rows, break-even +2.01% (index 142.00),
-                       most sensitive section Concrete (swing S$73,469.76), 9 sweep points
-  index adjuster     : variance -S$195,980.68 (-7.51%) after moving the index +12%
-                       assumptions 4 -> 5, adjusted lines flagged basis=assumed
+  waterfall          : 3 recharts surfaces, reconciled; CPI bridge row S$15,395.75 (basis assumed)
+  sensitivity run    : break-even +1.93% (index 144.97 from a baseline of 142.23 on the seeded
+                       sample), most sensitive section Formwork (swing S$153,109.40 across the
+                       10-section tornado), 9 sweep points on the index
+  index adjuster     : variance -S$259,302.53 (-7.85%) after moving the index +12%
+                       assumptions 7 -> 8, adjusted lines flagged basis=assumed
   template download  : "Downloaded shouldcost-boq-template-sg.xlsx" (one button, instructions inside)
 
 DESKTOP - the same BoQ priced at 2026Q3, a quarter no construction index has published
                        (Singapore has no usable producer index, so this market falls back to CPI)
   tender quarter list: 2026Q3 .. 2023Q1 (quarters beyond the last observation are selectable
                        and labelled "index carried forward with CPI")
+  rate basis         : "...Benchmarking at 2026Q3 instead carries every library rate from 2026Q2 to
+                       2026Q3 by the index ratio between them, so each priced line takes one more
+                       modelled step. DERIVED - RATE ESCALATED FROM THE LIBRARY"
   index tile         : index currency 2024Q4 - last published observation, carried forward to 2026-07
                        with CPI-ALL (x1.0230)
   benchmark panel    : "the BCA series last published 2024Q4 - 7 quarter(s) before 2026Q3. It was
                        carried forward to 2026-07 along the published trend of CPI-ALL (consumer
                        price index, 2024-10-2024-12 100.389 -> 2026-07 102.696), a factor of 1.0230:
                        index 139.20 becomes 142.40. DERIVED - BASIS ASSUMED"
+  KPI tiles          : BoQ S$3,043,410.50 | should-cost S$2,996,873.36 | variance +S$46,537.14 (+1.55%)
   line detail        : "Index carried forward with the consumer price index. Published observation
                        139.20 at 2024Q4 (7 quarter(s) stale) was carried forward to 2026-07 along the
                        published trend of CPI-ALL (CPI) = 102.696, a factor of 1.0230. The result is
                        derived to show the trend to date ... basis: assumed"
+                       tpi_ratio 1.001183, rate_base_quarter 2026Q2 - one quarter of index movement
+                       on top of the library rate
   waterfall          : reconciled; chips BoQ measured | Material assumed | Labour assumed |
                        Market risk derived | CPI bridge assumed | Scope derived | Unexplained derived
                        bridge row: S$19,029.75, basis assumed, method "sum(quantity x base_rate x
@@ -1225,8 +1304,7 @@ DESKTOP - the same BoQ priced at 2026Q3, a quarter no construction index has pub
                        carried forward with, factor, index used), section-coverage table (11 rows,
                        all "no published series" for Singapore), CPI chart, 14 recharts surfaces
   assumptions panel  : Collapse -> aria-expanded false, body unmounted, strip keeps
-                       "17 line(s) on an indicative seed rate" + "Show 6 warning(s) and 5
-                       assumption(s)";
+                       "Show 6 warning(s) and 7 assumption(s)";
                        remembered across a reload; Warnings and Assumptions blocks each collapse
   rules table        : Classification rules - SMM2, 10 rules, first rule
                        "Concrete | concrete OR grade <number>"; Collapse -> aria-expanded false,
@@ -1234,15 +1312,15 @@ DESKTOP - the same BoQ priced at 2026Q3, a quarter no construction index has pub
                        IT"; remembered across a reload
 
 DESKTOP - overheads 12% and margin 6% set on the adjusters panel
-  adjuster readout   : "Full should-cost: $2,938,980.85 benchmark cost grossed up by 12.0% overheads
-                       and then 6.0% margin = $3,482,636.24 (the engine's own figure: benchmarked
+  adjuster readout   : "Full should-cost: $2,993,828.58 benchmark cost grossed up by 12.0% overheads
+                       and then 6.0% margin = $3,547,751.44 (the engine's own figure: benchmarked
                        lines only...)"
-  KPI tiles          : should-cost $2,938,980.85 labelled "(benchmark cost) ... before overheads and
-                       margin" | FULL SHOULD-COST (INCL. OH&P) $3,482,636.24
-                       "+$348,497.03 overheads (12.0%) + $195,158.34 margin (6.0%) | compared
-                       full-to-full" | VARIANCE -$439,225.74 (-12.61%)
-  variance footer    : "Full should-cost - benchmark $2,938,980.85 + $348,497.03 overheads (12.0%)
-                       + $195,158.34 margin (6.0%) | OH&P | -12.61% | -$439,225.74 | $3,482,636.24"
+  KPI tiles          : should-cost $2,993,828.58 labelled "(benchmark cost) ... before overheads and
+                       margin" | FULL SHOULD-COST (INCL. OH&P) $3,547,751.44
+                       "+$355,078.75 overheads (12.0%) + $198,844.10 margin (6.0%) | compared
+                       full-to-full" | VARIANCE -$504,340.94 (-14.22%)
+  variance footer    : "Full should-cost - benchmark $2,993,828.58 + $355,078.75 overheads (12.0%)
+                       + $198,844.10 margin (6.0%) | OH&P | -14.22% | -$504,340.94 | $3,547,751.44"
   line detail        : "Full cost: overheads 12.0% and margin 6.0%. Benchmark rate $... becomes
                        $... per m3 (margin compounded on overheads)... The variance above is
                        measured full-to-full against that rate."
@@ -1250,27 +1328,30 @@ DESKTOP - overheads 12% and margin 6% set on the adjusters panel
                        chips BoQ measured | Material assumed | Labour assumed | Market risk derived |
                        CPI bridge assumed | Scope derived | Overheads assumed | Margin assumed |
                        Unexplained derived | Full should-cost assumed
-                       Overheads row $348,497.03, Margin row $195,158.34, closing row
-                       "Full should-cost total $3,482,636.24" basis ASSUMED
-  untick "include OH&P": variance tile reverts to +$104,429.65 (+3.55%) and the full tile reads
+                       Overheads row $355,078.75, Margin row $198,844.10, closing row
+                       "Full should-cost total $3,547,751.44" basis ASSUMED
+  untick "include OH&P": variance tile reverts to +$49,581.92 (+1.66%) and the full tile reads
                        "variance excludes OH&P" - the full cost is unchanged
 
-DESKTOP - switched to India, at the quarter the samples were calibrated for (2024Q4)
+DESKTOP - switched to India, at the quarter the rate library is stated at (2026Q2)
   market bar         : IS 1200 / CPWD DSR - rates in Indian Rupees
-  KPI tiles          : BoQ INR 6,25,30,109.50 | should-cost INR 6,10,40,204.12
-                       variance +INR 14,89,905.38 (+2.44%) | 10 of 22 breaching
+  rate basis         : "Rate basis: the rate library is stated at 2026Q2 in INR (2026-06-30) ...
+                        LIBRARY AS PUBLISHED. 4 of the library's 10 sections state that quarter; the
+                        other 6 are retained values from an older base and are still escalated."
+  KPI tiles          : BoQ INR 6,25,30,109.50 | should-cost INR 6,75,96,223.99
+                       variance -INR 50,66,114.49 (-7.49%) | 13 of 22 breaching
   index dashboard    : 20 rate-library rows
 
 DESKTOP - switched to India, priced at 2026Q3 (a quarter the WPI has not published)
   market bar         : IS 1200 / CPWD DSR - rates in Indian Rupees
   tender quarter list: 2026Q3 labeled "index carried forward with PPI"
-  benchmark panel    : "the WPI-CONST series last published 2026Q2 - 1 quarter(s) before 2026Q3.
+  benchmark panel    : "the CPWD series last published 2024Q4 - 7 quarter(s) before 2026Q3.
                         It was carried forward to 2026-07 along the published trend of PPI-ALL
-                        (producer price index, 2026-04-2026-06 109.533 -> 2026-07 109.900), a factor
-                        of 1.0033: index 92.60 becomes 92.91. DERIVED - BASIS ASSUMED"
-  KPI tiles          : BoQ INR 6,25,30,109.50 | should-cost INR 6,38,62,135.47
-                       variance -INR 13,32,025.97 (-2.09%) | 11 of 22 breaching
-                       index currency 2026Q2 - carried forward to 2026-07 with PPI-ALL (x1.0033)
+                        (producer price index, 2024-10-2024-12 101.767 -> 2026-07 109.900), a factor
+                        of 1.0799: index 110.50 becomes 119.33. DERIVED - BASIS ASSUMED"
+  KPI tiles          : BoQ INR 6,25,30,109.50 | should-cost INR 6,76,98,218.36
+                       variance -INR 51,68,108.86 (-7.63%) | 13 of 22 breaching
+                       index currency 2024Q4 - carried forward to 2026-07 with PPI-ALL (x1.0799)
   index dashboard    : "Data currency and the index bridge" table plus a section-coverage table
                        (11 rows, 10 of them "producer index"), a 16-basket producer table with the
                        preferred PPI-ALL charted, and a two-series CPI fallback table
@@ -1448,8 +1529,9 @@ Each of these is a deliberate choice, not an oversight.
     pricing the current quarter, so those quarters are selectable and labelled
     `- index carried forward with PPI` or `with CPI` (or `- index held, Nq stale` when the bridge is
     off). A newly uploaded
-    BoQ defaults to the current calendar quarter; the seeded demonstration bills keep the quarter they
-    were calibrated for, so the documented demo numbers did not move.
+    BoQ opens on the quarter its rate library is stated at (2026Q2), which is the quarter the
+    documented demo numbers are measured at; an upload saved on an older quarter is lifted to the
+    library quarter rather than priced below it, and a deliberate choice of any quarter is respected.
 21. **Overheads and margin compound, and the choice is asserted rather than described.** Margin is
     applied after overheads (`1.12 x 1.06 = 1.1872`), which is the usual commercial convention. The
     alternative - adding the two percentages - would understate the full cost, so the compounding is
@@ -1489,6 +1571,20 @@ Each of these is a deliberate choice, not an oversight.
     2,330 catalogue descriptions and fails if any no longer lands in its stored section, naming the
     fix (`python tools/build_sor_items.py`). A rule change that silently invalidated the template's
     `section` column would otherwise be invisible.
+29. **The unit and the currency are columns on every template row, and the quarter is a market fact.**
+    A rate is meaningless without the unit it is per and the money it is in, and "2026" is not a
+    quarter. The template therefore ships `UOM` (the app's vocabulary), `published_uom` (the
+    schedule's own wording) and a per-row `uom_note` explaining any conversion or refusing to make
+    one, plus `currency` on every row; `/api/countries` reports the `library_quarter` (2026Q2, both
+    markets), the currency and the stated/retained section counts, and the app opens on that quarter.
+    The alternative - a bare `unit` column and a rate that says "2026" while the reader assumes
+    whatever quarter they have in mind - is exactly the silent ambiguity this file exists to remove.
+30. **The benchmark quarter has a floor, and the floor is stated rather than enforced invisibly.** A
+    saved upload or a market switch cannot open the app on a quarter older than the library quarter,
+    because that escalates a rate the schedule already states at the library quarter *backwards* and
+    reports it as a finding. The floor only constrains defaults: a quarter the analyst picks by hand
+    is honoured, and the rate-basis line switches to `DERIVED - RATE ESCALATED FROM THE LIBRARY` so the
+    extra modelled step is visible on the face of the panel.
 
 ---
 

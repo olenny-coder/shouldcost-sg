@@ -379,7 +379,11 @@ def test_template_xlsx_has_boq_and_instructions_sheets(client_module, country) -
     # sor_code first so a line can be traced to the schedule, and section next to the
     # description so the analyst can filter to the rows the library can actually price.
     assert list(sheets["BoQ"].columns)[:3] == ["sor_code", "description", "section"]
-    assert set(sheets["BoQ"].columns) >= {"unit", "quantity", "rate", "is_placeholder"}
+    assert set(sheets["BoQ"].columns) >= {"UOM", "quantity", "rate", "is_placeholder"}
+    # The UOM is stated per row, with what the schedule measured and any conversion noted, and
+    # the currency is on every row so a sheet lifted out of context still says what it is in.
+    assert set(sheets["BoQ"].columns) >= {"published_uom", "uom_note", "currency"}
+    assert (sheets["BoQ"]["currency"] == ("INR" if country == "IN" else "SGD")).all()
     from app.boq_template import catalogue_rows
 
     assert len(sheets["BoQ"]) == len(catalogue_rows(country))

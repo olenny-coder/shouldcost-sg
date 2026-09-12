@@ -9,15 +9,17 @@ from __future__ import annotations
 import logging
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI
+from fastapi import Depends, FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy import text
+from sqlalchemy.orm import Session
 
 from . import __version__
+from .benchmark import library_as_of
 from .countries import registry_as_dicts
 from .schemas import CountryOut, HealthOut
 from .config import get_settings
-from .db import get_engine, get_session_factory, init_db
+from .db import get_db, get_engine, get_session_factory, init_db
 from .routers import boq, indices, variance
 
 
@@ -138,9 +140,19 @@ def healthz() -> HealthOut:
 
 
 @app.get("/api/countries", response_model=list[CountryOut], tags=["reference"])
-def list_countries() -> list[CountryOut]:
-    """Supported markets, their currency, measurement standard and credible sources."""
-    return [CountryOut(**entry) for entry in registry_as_dicts()]
+def list_countries(db: Session = Depends(get_db)) -> list[CountryOut]:
+    """Supported markets, their currency, measurement standard and credible sources.
+
+    Each market also reports **the quarter its rate library is stated at**
+    (`library_quarter`), read from the library rows themselves. That is the quarter at which
+    the schedule-derived rates carry an index ratio of exactly 1.000, so it is the natural
+    benchmark quarter to open on - and the UI defaults to it, rather than to whatever quarter
+    the index series last published or a previous run happened to use.
+    """
+    return [
+        CountryOut(**entry, **library_as_of(db, entry["code"]))
+        for entry in registry_as_dicts()
+    ]
 
 
 @app.get("/api/config", tags=["health"])

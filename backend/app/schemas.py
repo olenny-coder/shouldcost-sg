@@ -42,6 +42,17 @@ class CountryOut(BaseModel):
     selectable_tpi_series: list[str] = []
     unit_convention: str
     sources: list[SourceOut]
+    # The quarter this market's rate library is stated at, read from the library rows. At that
+    # quarter the published schedule rates carry an index ratio of exactly 1.000, so it is the
+    # quarter the UI opens on and the one a variance is meaningful against without escalation.
+    library_quarter: str = ""
+    library_default_tender_quarter: str = ""
+    library_sections_stated: int = 0
+    library_sections_retained: int = 0
+    library_sections_disagreeing: int = 0
+    library_source_date: str = ""
+    library_currency: str = ""
+    library_currencies: list[str] = []
 
 
 # --------------------------------------------------------------------------- #

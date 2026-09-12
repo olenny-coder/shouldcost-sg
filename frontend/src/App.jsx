@@ -123,6 +123,21 @@ export default function App() {
     return countries.filter(function (c) { return c.code === countryCode })[0] || null
   }, [countries, countryCode])
   const currency = country ? country.currency : 'SGD'
+  // The quarter this market's rate library is stated at. It is a FLOOR for the opening
+  // quarter, not a ceiling: an upload saved before that quarter existed would otherwise
+  // open the app on an older quarter and escalate a rate the schedule already states at
+  // the library quarter - backwards, and silently.
+  const libraryFloor = (country && country.library_default_tender_quarter) || ''
+  // True once the analyst has moved the quarter themselves, so a deliberate choice of an
+  // earlier quarter is respected rather than being pushed back up.
+  const [quarterPinned, setQuarterPinned] = useState(false)
+
+  useEffect(function () {
+    if (!countryReady || quarterPinned || !libraryFloor) return
+    const current = quarterIndex(tenderQuarter)
+    const floor = quarterIndex(libraryFloor)
+    if (current !== null && floor !== null && current < floor) setTenderQuarter(libraryFloor)
+  }, [countryReady, quarterPinned, libraryFloor, tenderQuarter])
 
   // ------------------------------------------------------------------ boot --
   useEffect(function () {
@@ -200,7 +215,14 @@ export default function App() {
           ? selectable[0]
           : (registry && registry.default_tpi_series) || 'BCA'
         const quarters = Array.from(new Set(tpi.map(function (r) { return r.quarter }))).sort()
-        let quarter = quarters.length ? quarters[quarters.length - 1] : '2026Q2'
+        // The rate library was derived from ONE published schedule of rates per market and
+        // escalated to ONE quarter - the library quarter. Benchmarking at that quarter needs
+        // no further escalation from it (the index ratio is exactly 1.000), so it is the
+        // default. The selector stays free to move off it; this only picks the opening value.
+        const libraryQuarter = (registry && registry.library_default_tender_quarter) || ''
+        let quarter = libraryQuarter && quarters.indexOf(libraryQuarter) !== -1
+          ? libraryQuarter
+          : (quarters.length ? quarters[quarters.length - 1] : '2026Q2')
         let series = preferred
 
         const sample = responses[4].filter(function (u) { return u.is_seeded_sample })[0]
@@ -209,8 +231,17 @@ export default function App() {
           const detail = await api.getUpload(sample.upload_id)
           if (cancelled) return
           // Honour the parameters the upload was last benchmarked with, so a
-          // demonstration bill opens on the quarter it was calibrated for.
-          if (detail.tender_quarter && quarters.indexOf(detail.tender_quarter) !== -1) {
+          // demonstration bill opens on the quarter it was calibrated for - but never on a
+          // quarter OLDER than the library, which would deflate a rate the schedule already
+          // states at the library quarter.
+          if (
+            detail.tender_quarter
+            && quarters.indexOf(detail.tender_quarter) !== -1
+            && (
+              !libraryQuarter
+              || (quarterIndex(detail.tender_quarter) || 0) >= (quarterIndex(libraryQuarter) || 0)
+            )
+          ) {
             quarter = detail.tender_quarter
           }
           // Only honour the uploaded run's series if it is one this market may be
@@ -224,6 +255,9 @@ export default function App() {
         }
         setTpiSeries(series)
         setTenderQuarter(quarter)
+        // A market switch opens on the market's own default again, not on a quarter the
+        // analyst pinned while looking at the other market.
+        setQuarterPinned(false)
         setTab('variance')
         setCountryReady(true)
       } catch (error) {
@@ -401,10 +435,17 @@ export default function App() {
     const response = await api.uploadBoQ(file, countryCode)
     setUpload(response)
     setSensitivity(null)
-    // A freshly uploaded BoQ is priced to date by default: the current calendar
-    // quarter, bridged with the CPI where the index has not published it yet.
-    // The seeded demonstration bills keep the quarter they were calibrated for.
-    setTenderQuarter(currentCalendarQuarter())
+    // A freshly uploaded BoQ opens on the quarter this market's rate library is stated at.
+    // The rates in the template are the schedule's own rates escalated to that one quarter,
+    // so benchmarking there prices them as published; moving the quarter off it is allowed
+    // and visible, but it is a modelled escalation and the panel says so.
+    const libraryQuarter = (country && country.library_default_tender_quarter) || ''
+    setQuarterPinned(false)
+    setTenderQuarter(
+      libraryQuarter && quarters.indexOf(libraryQuarter) !== -1
+        ? libraryQuarter
+        : currentCalendarQuarter()
+    )
     setTab('variance')
     setUploads(await api.listUploads(countryCode))
     return response
@@ -695,6 +736,13 @@ export default function App() {
           tpiSeries={tpiSeries}
           threshold={threshold}
           currency={currency}
+          libraryQuarter={country ? country.library_quarter : ''}
+          libraryCurrency={country ? country.library_currency : ''}
+          libraryCurrencies={country ? country.library_currencies : []}
+          librarySourceDate={country ? country.library_source_date : ''}
+          librarySectionsStated={country ? country.library_sections_stated : 0}
+          librarySectionsRetained={country ? country.library_sections_retained : 0}
+          librarySectionsDisagreeing={country ? country.library_sections_disagreeing : 0}
           regions={regions}
           regionCode={regionCode}
           activeRegion={regions.filter(function (r) { return r.region_code === regionCode })[0]}
@@ -703,7 +751,10 @@ export default function App() {
           bridgeMode={bridgeMode}
           indexBridge={result ? result.index_bridge : null}
           onChange={function (patch) {
-            if (patch.tenderQuarter !== undefined) setTenderQuarter(patch.tenderQuarter)
+            if (patch.tenderQuarter !== undefined) {
+              setQuarterPinned(true)
+              setTenderQuarter(patch.tenderQuarter)
+            }
             if (patch.tpiSeries !== undefined) setTpiSeries(patch.tpiSeries)
             if (patch.threshold !== undefined) setThreshold(patch.threshold)
             if (patch.regionCode !== undefined) setRegionCode(patch.regionCode)

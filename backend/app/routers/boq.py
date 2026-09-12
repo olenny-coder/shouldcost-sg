@@ -21,6 +21,7 @@ from ..benchmark import (
     RegionLookupError,
     TPILookupError,
     build_benchmark,
+    library_as_of,
     load_benchmark_rates,
     resolve_region,
 )
@@ -238,6 +239,7 @@ def download_template(
         ),
     ),
     country: str = Query(DEFAULT_COUNTRY, description="SG | IN"),
+    db: Session = Depends(get_db),
 ) -> StreamingResponse:
     """Download the BoQ template for one country.
 
@@ -246,7 +248,12 @@ def download_template(
     """
     registry = resolve_country(country)
     if format == "xlsx":
-        payload = boq_template.template_xlsx_bytes(registry.code)
+        # The library's own quarter, read from the rate rows, so the instructions state the
+        # basis the rates are actually stated at rather than a hardcoded one.
+        library = library_as_of(db, registry.code)
+        payload = boq_template.template_xlsx_bytes(
+            registry.code, library_quarter=library["library_quarter"]
+        )
         filename = boq_template.template_filename(registry.code, "xlsx")
         return StreamingResponse(
             io.BytesIO(payload),

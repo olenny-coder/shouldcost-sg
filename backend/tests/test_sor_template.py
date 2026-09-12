@@ -48,7 +48,8 @@ def _template_subset(country: str, wanted: int = 12) -> list[list]:
     """A small, filled bill built from real schedule rows.
 
     One row per section the library prices, so the upload exercises every section the
-    catalogue covers rather than a single trade.
+    catalogue covers rather than a single trade. Rows are built BY HEADER NAME, so a change
+    to the template's columns cannot silently shift values into the wrong field.
     """
     headers = boq_template.HEADERS
     rows = [headers]
@@ -59,9 +60,20 @@ def _template_subset(country: str, wanted: int = 12) -> list[list]:
         if item.section in seen and len(seen) < 10:
             continue
         seen.add(item.section)
-        rows.append(
-            [item.code, item.description, item.section, item.unit, 10, item.rate or 100, "false", ""]
-        )
+        values = {
+            "sor_code": item.code,
+            "description": item.description,
+            "section": item.section,
+            "UOM": item.unit,
+            "published_uom": item.published_unit,
+            "uom_note": "",
+            "quantity": 10,
+            "rate": item.rate or 100,
+            "currency": item.currency,
+            "is_placeholder": "false",
+            "replace_with": "",
+        }
+        rows.append([values.get(header, "") for header in headers])
         if len(rows) - 1 >= wanted:
             break
     return rows
@@ -203,6 +215,130 @@ def test_the_instructions_explain_the_schedule_and_the_sections(client_module, c
     assert "SECTIONS SUMMARY" in text
     for row in boq_template.sections_summary(country):
         assert row["smm2_section"] in text
+
+
+# --------------------------------------------------------------------------- #
+# UOM and currency are stated, not implied
+# --------------------------------------------------------------------------- #
+@pytest.mark.parametrize("country", [SG, IN])
+def test_every_row_states_its_uom_its_published_uom_and_its_currency(client_module, country) -> None:
+    """A rate is meaningless without its unit, so the sheet says which one it is per."""
+    response = client_module.get(f"/api/boq/template?country={country}")
+    boq = pd.read_excel(io.BytesIO(response.content), sheet_name="BoQ", engine="openpyxl")
+    currency = "INR" if country == IN else "SGD"
+
+    assert (boq["currency"] == currency).all()
+
+    # Read the sheet with empty cells as text so a genuinely absent unit is a "" and not a NaN
+    # that no comparison can ever satisfy.
+    uom = boq["UOM"].fillna("").astype(str)
+    published = boq["published_uom"].fillna("").astype(str)
+    note = boq["uom_note"].fillna("").astype(str)
+
+    # The UOM column holds the app's vocabulary - the unit the rate is per - for every row the
+    # app can compare, and the schedule's own unit is kept beside it.
+    comparable = uom.isin(["m", "m2", "m3", "t", "item"])
+    assert comparable.any()
+    assert published[comparable].str.len().gt(0).all(), (
+        "a row the app can compare must still say which unit the schedule stated"
+    )
+
+    # Everything else is exactly the set the catalogue flags as uncomparable, and each such row
+    # explains itself in words: either the schedule's unit is carried verbatim, or the schedule
+    # states no unit at all and the cell stays empty rather than being filled with a guess.
+    uncomparable = uom[~comparable]
+    assert len(uncomparable) == boq_template.catalogue_totals(country)["unit_not_comparable"]
+    for index in uncomparable.index:
+        if uom[index] == "":
+            assert published[index] == "", "no UOM only where the schedule states no unit"
+            assert note[index].startswith("NO UOM")
+        else:
+            assert uom[index] == published[index], (
+                "an uncomparable unit is carried verbatim rather than forced into the app's "
+                "vocabulary"
+            )
+            assert note[index].startswith("NOT COMPARABLE")
+    # A conversion is recorded rather than silent.
+    converted = comparable & (uom != published)
+    assert converted.any(), "the schedules write sqm/kg, so some rows must be converted"
+    assert note[converted].str.startswith("converted from").all()
+    assert (note[comparable & (uom == published)] == "").all(), (
+        "a row whose unit already matches needs no note"
+    )
+
+
+def test_the_instructions_carry_a_uom_legend_and_the_rate_basis(client_module) -> None:
+    response = client_module.get("/api/boq/template?country=IN")
+    text = pd.read_excel(
+        io.BytesIO(response.content), sheet_name="Instructions", engine="openpyxl", header=None
+    ).astype(str).to_string()
+
+    assert "UOM - THE UNIT YOUR RATE AND QUANTITY MUST BE IN" in text
+    for code, meaning, spellings in boq_template.UOM_LEGEND:
+        assert code in text and meaning in text and spellings in text
+    assert "published_uom" in text and "uom_note" in text
+    # The rate basis: the quarter the library is stated at, and therefore the benchmark default.
+    assert "CURRENCY AND THE QUARTER THE RATES ARE STATED AT" in text
+    assert "2026Q2" in text
+    assert "index ratio of exactly 1.000" in text
+    assert "INR" in text
+
+
+def test_the_market_reports_the_quarter_its_library_is_stated_at(client_module) -> None:
+    """The benchmark quarter follows the library, not the last index release."""
+    countries = {row["code"]: row for row in client_module.get("/api/countries").json()}
+    for code, currency in (("SG", "SGD"), ("IN", "INR")):
+        market = countries[code]
+        assert market["library_quarter"] == "2026Q2", (
+            "the SOR-derived rates are escalated to Q2 2026, so that is the quarter to "
+            "benchmark at without escalating them again"
+        )
+        assert market["library_default_tender_quarter"] == "2026Q2"
+        assert market["library_currency"] == currency
+        assert market["currency"] == currency
+        assert market["library_sections_stated"] > 0
+        assert market["library_sections_disagreeing"] == 0
+
+
+def test_benchmarking_at_the_library_quarter_needs_no_escalation(session) -> None:
+    """At the library's own quarter the schedule-derived sections carry a ratio of exactly 1.0.
+
+    That is what makes 2026Q2 the right default: a rate the schedule states at Q2 2026 must not
+    be escalated again by an index that has moved since 2010 or 2023.
+    """
+
+    class Item:
+        def __init__(self, section, unit):
+            self.id = 1
+            self.raw_description = "Reinforced concrete to columns"
+            self.unit = unit
+            self.quantity = 100.0
+            self.boq_rate = 140.53
+            self.amount = 14053.0
+            self.smm2_section = section
+            self.classified_by = "auto"
+            self.sor_code = ""
+            self.is_placeholder = False
+            self.replace_with = ""
+
+    from app.benchmark import build_benchmark
+
+    result = build_benchmark(
+        session,
+        upload_id=1,
+        filename="ratio-check.csv",
+        items=[Item("Concrete", "m3")],
+        tender_quarter="2026Q2",
+        tpi_series_name="BCA",
+        country=SG,
+    )
+    line = result.lines[0]
+    assert line.is_benchmarked
+    assert line.rate_base_quarter == "2026Q2"
+    assert line.tpi_ratio == pytest.approx(1.0, abs=1e-9), (
+        "a rate stated at the library quarter must not be escalated by the index"
+    )
+    assert line.adjusted_benchmark_rate == pytest.approx(line.benchmark_base_rate, abs=0.01)
 
 
 def test_template_csv_variant_is_the_item_list_only(client_module) -> None:

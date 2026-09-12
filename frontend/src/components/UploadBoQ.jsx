@@ -41,7 +41,7 @@ export default function UploadBoQ(props) {
           items={[
             'Start from the template so the column names and the item vocabulary are right: one download button below, with its instructions on a second sheet.',
             'The template lists the whole schedule of rates for this market - hundreds of items - so you fill in quantities against the real wording instead of retyping descriptions. Delete the rows you do not need.',
-            'Required columns are description, unit, quantity and rate. Common alternative spellings are understood, and an amount column is optional.',
+            'Required columns are description, UOM, quantity and rate. UOM is the unit the rate and the quantity are per - m, m2, m3, t or item - and the template states it on every row. Common alternative spellings are understood, and an amount column is optional.',
             'Drop the file anywhere in the dashed box, or click it to browse. Your file is parsed in memory on the server and never stored.',
             'Units matter. A line whose unit does not match the benchmark rate unit is set aside rather than compared, because comparing an m2 rate with an m rate is meaningless.',
             'After upload, check the sections summary: it shows, per section, how many lines came from the schedule, how many the rate library can price, and how many schedule items exist for that section.',
@@ -53,10 +53,24 @@ export default function UploadBoQ(props) {
       <p className="muted">
         You are working in <strong>{country.name}</strong> - {country.measurement_standard}, amounts
         in <strong>{currency}</strong>. CSV or XLSX with headers{' '}
-        <code>description, unit, quantity, rate</code>. Column names are matched leniently. The file
+        <code>description, UOM, quantity, rate</code>. Column names are matched leniently (
+        <code>unit</code>, <code>units</code> and <code>uom</code> all work). The file
         is parsed in memory on the backend and never written to disk. PDF extraction is not enabled
         in this build - see README "Environment".
       </p>
+      {country.library_quarter ? (
+        <p className="muted small">
+          <strong>Rate basis:</strong> the {country.name} rate library is stated at{' '}
+          <strong>{country.library_quarter}</strong> in <strong>{currency}</strong>
+          {country.library_source_date ? ' (source dated ' + country.library_source_date + ')' : ''}.
+          The template's pre-filled rates are schedule rates escalated to that quarter, and the
+          benchmark opens on it, because at that quarter the index ratio is exactly 1.000
+          {country.library_sections_retained
+            ? ' for the ' + country.library_sections_stated + " sections the library states it for. The other "
+              + country.library_sections_retained + ' sections are retained values from an older base.'
+            : '.'}
+        </p>
+      ) : null}
 
       <div className="row" style={{ marginTop: 8 }}>
         <button type="button" className="secondary" onClick={function () { props.onDownloadTemplate('xlsx'); }}>
@@ -66,8 +80,11 @@ export default function UploadBoQ(props) {
       <p className="muted small" style={{ marginTop: 6 }}>
         One template per market, and the instructions are built into it. The BoQ sheet lists every
         item in the {country.name} schedule of rates, with a <code>section</code> column so you can
-        filter to the rows the rate library can price, and a <code>sor_code</code> so a line can be
-        traced back to the schedule. Fill in quantities and your own rates.
+        filter to the rows the rate library can price, a <code>sor_code</code> so a line can be
+        traced back to the schedule, and a <code>UOM</code> column per row - the unit the rate and
+        the quantity are per, in {country.name}'s own terms, with the schedule's own wording kept
+        beside it in <code>published_uom</code> and any conversion explained in <code>uom_note</code>.
+        Fill in quantities and your own rates, in {currency}.
       </p>
       {props.templateStatus ? (
         <p className="muted small" style={{ marginTop: 4 }}>{props.templateStatus}</p>

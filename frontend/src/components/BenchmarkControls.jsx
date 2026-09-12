@@ -131,6 +131,45 @@ export default function BenchmarkControls(props) {
         </button>
       </div>
 
+      {props.libraryQuarter ? (
+        <p className="small" style={{ marginTop: 8 }}>
+          <strong>Rate basis:</strong>{' '}
+          the rate library is stated at <strong>{props.libraryQuarter}</strong> in{' '}
+          <strong>{props.libraryCurrency || (props.libraryCurrencies || []).join(', ') || 'n/a'}</strong>
+          {props.librarySourceDate ? ' (' + props.librarySourceDate + ')' : ''}.{' '}
+          {props.tenderQuarter === props.libraryQuarter ? (
+            <>
+              Benchmarking at that quarter prices the schedule rates as they are published: the
+              index ratio from the library quarter is <strong>1.000</strong>, so they are not
+              escalated again.{' '}
+              <span className="badge basis-measured">library as published</span>
+            </>
+          ) : (
+            <>
+              Benchmarking at <strong>{props.tenderQuarter}</strong> instead carries every library
+              rate from {props.libraryQuarter} to {props.tenderQuarter} by the index ratio between
+              them, so each priced line takes one more modelled step.{' '}
+              <span className="badge basis-assumed">derived - rate escalated from the library</span>
+            </>
+          )}{' '}
+          {props.librarySectionsStated ? (
+            <>
+              {props.librarySectionsStated} of the library's{' '}
+              {props.librarySectionsStated + (props.librarySectionsRetained || 0)} sections state
+              that quarter;{' '}
+              {props.librarySectionsRetained
+                ? 'the other ' + props.librarySectionsRetained + ' are retained values from an older '
+                  + 'base and are still escalated from it. '
+                : 'every one of them does. '}
+            </>
+          ) : null}
+          {props.librarySectionsDisagreeing
+            ? props.librarySectionsDisagreeing + ' library row(s) state a different quarter; they '
+              + 'are reported rather than averaged. '
+            : ''}
+        </p>
+      ) : null}
+
       {props.indexBridge ? (
         <p className={'small ' + (props.indexBridge.applied ? 'bridge-line' : 'muted')}
            style={{ marginTop: 8 }}>

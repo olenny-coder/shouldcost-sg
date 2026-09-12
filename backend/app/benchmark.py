@@ -42,6 +42,7 @@ scope_factor = 1 / tpi_ratio and the rate is held at base year.
 from __future__ import annotations
 
 import re
+from collections import Counter
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 
@@ -721,6 +722,38 @@ def load_benchmark_rates(
         if current is None or rank(row) < rank(current):
             chosen[row.smm2_section] = row
     return chosen
+
+
+def library_as_of(session: Session, country: str = DEFAULT_COUNTRY) -> dict:
+    """The quarter a market's rate library is stated at, read from the library rows.
+
+    A row's `base_quarter` says when its rate is expressed: the published schedule rate
+    escalated to that quarter by CPI. At that quarter the index ratio is exactly 1.000, so
+    it is the quarter to benchmark at when you want the library as published rather than
+    escalated; anything later is carried forward by the index and disclosed.
+
+    Returns the quarter plus the counts that make the statement checkable: how many sections
+    state a quarter, how many fall back to the series base year, the currencies involved, and
+    the oldest/newest source dates. A market whose rows disagree falls back to the majority
+    quarter, and says how many rows disagree rather than averaging them into a fiction.
+    """
+    code = (country or DEFAULT_COUNTRY).strip().upper()
+    rows = list(session.scalars(select(BenchmarkRate).where(BenchmarkRate.country == code)).all())
+    stated = [(row.base_quarter or "").strip() for row in rows if (row.base_quarter or "").strip()]
+    counts = Counter(stated)
+    quarter = counts.most_common(1)[0][0] if counts else ""
+    source_dates = sorted({(row.source_date or "").strip() for row in rows if row.source_date})
+    currencies = sorted({(row.currency or "").strip() for row in rows if row.currency})
+    return {
+        "library_quarter": quarter,
+        "library_default_tender_quarter": quarter or DEFAULT_TENDER_QUARTER,
+        "library_sections_stated": len(stated),
+        "library_sections_retained": len(rows) - len(stated),
+        "library_sections_disagreeing": len(stated) - counts.get(quarter, 0),
+        "library_source_date": source_dates[-1] if source_dates else "",
+        "library_currencies": currencies,
+        "library_currency": currencies[0] if len(currencies) == 1 else "",
+    }
 
 
 # --------------------------------------------------------------------------- #
