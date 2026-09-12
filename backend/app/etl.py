@@ -25,6 +25,7 @@ import pandas as pd
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
+from .benchmark import DEFAULT_TENDER_QUARTER
 from .countries import DEFAULT_COUNTRY, get_country
 from .db import get_engine, get_session_factory, init_db
 from .models import (
@@ -66,6 +67,23 @@ def _as_bool(value: str) -> bool:
 
 def _as_float(value: str) -> float:
     return float(str(value).replace(",", "").strip())
+
+
+def _normalise_quarter(value: str | None) -> str:
+    """Normalise a base quarter to YYYYQn, or empty when none is stated.
+
+    Blank is meaningful: it means "this rate is at the index series' own base year".
+    A malformed value is a seed error, so it is rejected rather than silently dropped.
+    """
+    text = str(value or "").strip().upper().replace(" ", "")
+    if not text:
+        return ""
+    import re as _re
+
+    match = _re.fullmatch(r"(\d{4})Q([1-4])", text)
+    if not match:
+        raise ValueError(f"base_quarter {value!r} is not a quarter such as 2026Q2.")
+    return f"{int(match.group(1))}Q{int(match.group(2))}"
 
 
 def _country(value: str | None) -> str:
@@ -195,6 +213,9 @@ def load_benchmark_rates(session: Session, df: pd.DataFrame) -> int:
             "scope_inclusions": row["scope_inclusions"].strip(),
             "scope_exclusions": row["scope_exclusions"].strip(),
             "confidence": row["confidence"].strip(),
+            # The quarter the rate is expressed at, if the publisher or the analyst
+            # states one. Empty means the rate is at the index series' own base year.
+            "base_quarter": _normalise_quarter(row.get("base_quarter", "")),
             "is_placeholder": _as_bool(row.get("is_placeholder", "true")),
             "provenance_note": row.get("provenance_note", "").strip(),
             "replace_with": row.get("replace_with", "").strip(),
@@ -267,7 +288,10 @@ def load_sample_boq(
         country=country.code,
         region_code=default_region_code(session, country.code),
         filename=filename,
-        tender_quarter="2024Q4",
+        # The demonstration bills are priced at the quarter the rate library is
+        # expressed at, so the sample shows the library as built. Other quarters
+        # remain selectable and carry the index movement from here.
+        tender_quarter=DEFAULT_TENDER_QUARTER,
         tpi_series_name=country.default_tpi_series,
         currency=country.currency,
     )

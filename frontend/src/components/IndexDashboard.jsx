@@ -175,6 +175,7 @@ export default function IndexDashboard(props) {
     return map;
   }, [benchmarkRates]);
 
+  const derivedRateCount = benchmarkRates.filter(function (r) { return !r.is_placeholder; }).length;
   const baseYears = Array.from(new Set(tpiRows.map(function (r) { return r.base_year; }))).sort();
   const baseYearLabel = baseYears.length ? baseYears.join('/') : 'n/a';
 
@@ -246,16 +247,33 @@ export default function IndexDashboard(props) {
         this app is invented, and no source is called at runtime.
       </div>
 
-      <h3>Section coverage - which published index re-prices which section</h3>
+      <h3>Section coverage - the rate, and the index that carries it to current</h3>
       <p className="muted small">
-        A section is only escalated when a loaded series measures its cost drivers. This table is
-        read from the database, so it reports what is actually loaded. {coverage
+        Two separate questions, answered per section in one row. <strong>Rate library</strong> is
+        what actually prices the BoQ, and states the quarter that rate is expressed at.{' '}
+        <strong>Index coverage</strong> is which published series can re-price the section. A
+        section is only escalated when a loaded series measures its cost drivers. Both columns are
+        read from the database, so they report what is actually loaded. {coverage
           ? coverage.producer_covered_sections.length + ' of ' + coverage.sections.length
             + ' sections are covered by a published producer index in ' + coverage.country_name + '.'
           : (props.coverageUnavailable
             ? 'This view is not available from the API you are connected to.'
             : 'Coverage data has not loaded yet.')}
       </p>
+      {coverage && coverage.carry_index_note ? (
+        <div className="notice notice-info">
+          <strong>How rates reach the quarter being priced.</strong> {coverage.carry_index_note}{' '}
+          {coverage.carry_index_kind === 'producer'
+            ? 'A producer index measures what suppliers charge for the commodity baskets a construction rate is made of, so it is the stronger of the two proxies.'
+            : coverage.carry_index_kind === 'consumer'
+              ? 'This market publishes no usable producer index, so consumer prices carry the rates - a weaker proxy, disclosed on every affected line.'
+              : ''}{' '}
+          The schedules of rates were themselves <strong>cumulative-adjusted to their stated
+          quarter</strong> - BCA by 1.171 and CPWD by 1.2364, each the publisher-file cumulative CPI
+          factor - so the app escalates from that quarter, never from the index series&rsquo; own
+          base year, which would apply the same inflation twice.
+        </div>
+      ) : null}
       {props.coverageUnavailable && !coverage ? (
         <div className="notice notice-warn">
           <strong>The section coverage table is unavailable on this deployment.</strong>{' '}
@@ -272,7 +290,8 @@ export default function IndexDashboard(props) {
           <table className="data-table compact">
             <thead>
               <tr>
-                <th>Section</th><th>Coverage</th><th>Published series that re-price it</th>
+                <th>Section</th><th>Rate library</th><th>Index coverage</th>
+                <th>Published series that re-price it</th>
                 <th>How it works</th><th>Still to wire in</th>
               </tr>
             </thead>
@@ -282,6 +301,33 @@ export default function IndexDashboard(props) {
                 return (
                   <tr key={row.section}>
                     <td><span className="section-pill">{row.section}</span></td>
+                    <td className="small" style={{ maxWidth: 240 }}>
+                      {row.rate ? (
+                        <div>
+                          <div>
+                            <strong>{num(row.rate.base_rate, 2)}</strong>{' '}
+                            <span className="muted">per {row.rate.unit}</span>
+                          </div>
+                          {row.rate.is_placeholder ? (
+                            <span className="badge basis-assumed">retained estimate</span>
+                          ) : (
+                            <span className="badge basis-derived">
+                              derived to {row.rate.base_quarter}
+                            </span>
+                          )}
+                          <div className="muted small">
+                            carried from {row.rate.carried_from} by{' '}
+                            {coverage.carry_index_series || 'no index'}
+                          </div>
+                          <div className="muted small">{row.rate.source}</div>
+                          {row.rate.is_placeholder ? (
+                            <div className="todo small">{row.rate.replace_with}</div>
+                          ) : null}
+                        </div>
+                      ) : (
+                        <span className="muted">no library rate - held at the tendered rate</span>
+                      )}
+                    </td>
                     <td>
                       <span className={'badge ' + status.tone}>{status.label}</span>
                       <div className="small muted" style={{ maxWidth: 220 }}>{status.help}</div>
@@ -798,17 +844,28 @@ export default function IndexDashboard(props) {
 
       <h3>Benchmark rate library</h3>
       <p className="muted small">
-        What actually prices your BoQ. These are <strong>indicative seed values</strong>, because the
-        schedules of rates they stand in for - the CPWD Delhi Schedule of Rates and BCA InfoNet - are
-        licensed publications rather than public data. Each row names the publication it stands in
-        for; every one carries <code>is_placeholder: true</code>.
+        What actually prices your BoQ. Every rate is <strong>derived to current</strong> from a named
+        published schedule of rates: the BCA Schedule of Rates, May 2022 for Singapore and the CPWD
+        Delhi Schedule of Rates 2021 Vol-II for India, each cumulative-adjusted to{' '}
+        <strong>Q2 2026</strong> by the factor its own source file states (BCA x1.171, CPWD
+        x1.2364 - the cumulative CPI inflation from the schedule&rsquo;s base year to 2026). Each
+        row states the quarter it is expressed at, so the app escalates from that quarter and never
+        from the index series&rsquo; own base year.{' '}
+        {derivedRateCount} of {benchmarkRates.length} rows are derived from the schedules of rates
+        and carry <code>is_placeholder: false</code>. Sections the loaded extracts do not reach -
+        the Singapore schedules carry no piling or M&amp;E, and the India extract is DSR{' '}
+        <em>Vol-II</em>, so Vol-I earthwork, concrete, reinforcement and formwork are not in it -
+        keep a <strong>retained estimate</strong>, flagged <code>is_placeholder: true</code> with
+        the publication named against it. The preliminaries estimate is retained in both markets at
+        the user&rsquo;s instruction, because neither extract contains a general-requirements
+        schedule.
       </p>
       <div className="table-scroll">
         <table className="data-table compact">
           <thead>
             <tr>
-              <th>Section</th><th>Unit</th><th className="num">Base rate</th>
-              <th>Source</th><th>Base yr</th><th>Confidence</th><th>Data</th>
+              <th>Section</th><th>Unit</th><th className="num">Rate</th>
+              <th>Source, derived to current</th><th>Expressed at</th><th>Confidence</th><th>Basis</th>
             </tr>
           </thead>
           <tbody>
@@ -822,12 +879,16 @@ export default function IndexDashboard(props) {
                     {row.source}
                     <div className="muted small">{row.source_date} - {row.classification_standard}</div>
                   </td>
-                  <td>{row.base_year}</td>
+                  <td className="small">
+                    {row.base_quarter
+                      ? <span className="badge basis-derived">{row.base_quarter}</span>
+                      : <span className="badge basis-assumed">base year {row.base_year}</span>}
+                  </td>
                   <td>{row.confidence}</td>
                   <td>
                     {row.is_placeholder
-                      ? <span className="badge basis-assumed">indicative seed</span>
-                      : <span className="badge basis-measured">published</span>}
+                      ? <span className="badge basis-assumed">retained estimate</span>
+                      : <span className="badge basis-measured">derived to current</span>}
                     {row.provenance_note
                       ? <div className="small muted" style={{ maxWidth: 320 }}>{row.provenance_note}</div>
                       : null}

@@ -5,10 +5,15 @@ Quantities, get every line classified to a measurement section, re-priced agains
 library adjusted by a published cost index, and reported as variance, section subtotals, a
 reconciliation **waterfall** and a **sensitivity analysis**.
 
-| Market | Measurement standard | Currency | Index series | Price index used to carry a stale index forward |
+| Market | Measurement standard | Currency | Rate library source (derived to Q2 2026) | Price index used to carry a stale index forward |
 |---|---|---|---|---|
-| Singapore | **SMM2** (Standard Method of Measurement, 2nd Ed.) | SGD | BCA, HDB, RLB, AECOM (indicative seed values) | no usable **PPI** (documented gap), so the **SingStat CPI, All Items** (2024 = 100) - **real** |
-| India | **IS 1200** + **CPWD DSR** chapter structure | INR | CPWD, NBO (indicative seed values with the licensed DSR), WPI-CONST/CEM/STL/RMC (real) | **OEA producer price index, 16 commodity baskets** (2022-23 = 100) - **real** - with the **MoSPI CPI, Combined, All-India** as fallback |
+| Singapore | **SMM2** (Standard Method of Measurement, 2nd Ed.) | SGD | **BCA Schedule of Rates, May 2022** x 1.171 to Q2 2026 - and **BCA is the only index** a benchmark may run against | no usable **PPI** (documented gap), so the **SingStat CPI, All Items** (2024 = 100) - **real** |
+| India | **IS 1200** + **CPWD DSR** chapter structure | INR | **CPWD Delhi Schedule of Rates 2021 Vol-II** x 1.2364 to Q2 2026 - and **CPWD is the only index** a benchmark may run against | **OEA producer price index, 16 commodity baskets** (2022-23 = 100) - **real** - with the **MoSPI CPI, Combined, All-India** as fallback |
+
+The **rate library is derived to current**: every rate comes from a named published schedule of rates,
+cumulative-adjusted to **Q2 2026** by the factor the schedule's own source file states. Each row records
+the quarter it is expressed at (`base_quarter`), and the app escalates from *that* quarter - never from
+the index series' own base year, which would apply the same inflation twice.
 
 Published construction cost indexes lag the tender quarter - the BCA series is a quarterly release and
 the WPI appears about two months after the month it describes, while the producer and consumer price
@@ -165,13 +170,20 @@ cd backend && python -m app.etl     # upserts it, idempotently
 python tools/verify_seed_data.py   # re-derives every seeded value from the raw files
 ```
 
-**What is deliberately still synthetic, and why.** The *indexes* can be real because governments
-publish them. The *benchmark unit rates* cannot: the CPWD Delhi Schedule of Rates, the state PWD
-schedules and BCA Construction InfoNet are all licensed publications. Shipping a plausible-looking
-rupee rate per SMM2 section would be inventing data. Those 20 rows therefore stay **indicative seed
-values** with a named target, each carrying `is_placeholder: true`, a `source_url` and a
-`# TODO: replace with actual <source> <period>` marker, and the app says so on every screen that
-shows them.
+**What the rate library is built from.** The benchmark rates are no longer invented. Eleven of the
+twenty come from a real published schedule of rates - the **BCA Schedule of Rates, May 2022** for
+Singapore and the **CPWD Delhi Schedule of Rates 2021 Vol-II** for India - cumulative-adjusted to
+**Q2 2026** by the factor each source file states (x1.171 and x1.2364, the cumulative CPI inflation
+from the schedule's base year). Each is the **median of the qualifying SOR lines** that map to its
+canonical section, and `make verify-seed` re-derives all eleven from the publisher files.
+
+**What is deliberately still an estimate, and why.** The extracts are partial. The India file is DSR
+*Vol-II* (chapters 13-26), so earthwork, concrete, reinforcement and formwork - which live in Vol-I -
+are not in it; the Singapore file carries no piling and no M&E; and neither carries a
+general-requirements schedule. Those nine rows keep a **retained estimate**, each carrying
+`is_placeholder: true`, a `source_url` and a `# TODO: replace with actual <source> <period>`
+marker. The **preliminaries estimate is retained in both markets at the user's instruction**, so the
+section is never silently dropped. The app labels derived and retained separately on every screen.
 
 ### Refreshing with real data
 
@@ -261,6 +273,40 @@ a building. Either way the bridged value is **derived to show the trend to date*
 The engine never invents a price index either: if no usable series is loaded for the market, the
 bridge degrades to "hold the last observation" plus a warning naming the reason, and the run still
 completes.
+
+### The library states its own quarter, and one index per market
+
+The rate library is **cumulative-adjusted to Q2 2026**, which creates a double-counting trap: the
+ordinary ratio is `index(tender) / index(series base year)`, and applying that to a rate which already
+contains 2022 -> 2026 movement would apply the same inflation twice. So every library row can state
+the quarter it is expressed at:
+
+```
+base_quarter = "2026Q2"   ->   ratio = index(tender) / index(2026Q2)
+base_quarter = ""         ->   ratio = index(tender) / index(series base year)   [prior behaviour]
+```
+
+At a Q2 2026 tender the SOR-derived sections therefore have a ratio of exactly **1.0**, and a later
+quarter escalates only by the movement since Q2 2026. A **retained** estimate has no stated quarter, so
+it keeps the old behaviour and is escalated from the series base year - which is why two sections in
+one run can carry different ratios, each correct for its own basis. The waterfall splits the movement
+accordingly: `market_risk` is the movement the index has actually **published** since the rate's base
+quarter, and `cpi_bridge` is the modelled carry-forward on top. When the library is expressed *after*
+the last published observation - rates at 2026Q2 against an index last published at 2024Q4 - nothing
+since the rate base has been published at all, so market risk is exactly zero and the whole movement is
+the modelled step.
+
+Two consequences worth stating plainly:
+
+* **A benchmark runs against one series per market** (`selectable_tpi_series`: BCA for Singapore,
+  CPWD for India). The library was derived from one published schedule of rates per market, so pricing
+  it with a different index would escalate DSR-derived rates with a series they do not belong to.
+  WPI-CONST in particular is a materials-only composite with no labour, plant or preliminaries content.
+  Every other series stays loaded and charted on the index dashboard.
+* **The waterfall builds every step from the base rate at full precision** (`benchmark_base_rate_exact`),
+  not the 2dp display value. Using the rounded rate left a residual that grew with quantity and the
+  regional multiplier and landed in `unexplained`, which is meant to be a rounding artefact and nothing
+  else. It is now exactly zero.
 
 `GET /api/indices/freshness` reports the same machinery without running a benchmark: per series, the
 last published quarter, the lag against a reference quarter, the kind and name of the index that
@@ -569,7 +615,7 @@ tagged `basis: assumed` in the response.
 | `backend/data/price_series.csv` | 786 | **IN PPI (640, REAL): 16 producer baskets**, monthly 2023-04 to 2026-07, base 2022-23 = 100, from the Office of the Economic Adviser's published OPPI/WPI workbook. Each carries its published basket weight, the sections it may re-price in `scope_sections`, and the mapping rationale in `provenance_note`. **SG CPI (55, REAL):** All Items, monthly 2022-01 to 2026-07, base 2024 = 100 (SingStat table M213751). **IN CPI (91, REAL):** Combined All-India General - 43 months on the current base 2024 = 100 (2023-01, the publisher's back-cast, through 2026-07) and 48 on the predecessor base 2012 = 100 (2022-01 to 2025-12). Supersedes `cpi_series.csv` when the table gained a `kind` column |
 | `backend/data/cpi_series.csv` | 146 | the pre-`kind` CPI seed, retained as the input the PPI build reads and as the record of the original CPI rows |
 | `backend/data/material_prices.csv` | 180 | **SG (60, REAL):** cement, steel_rebar, aggregate, sand, ready_mix_concrete - annual 2014-2025, SGD prices. **IN (120, REAL):** cement, steel_rebar, ready_mix_concrete - monthly 2023-04 to 2026-07, INR cost INDEX (2022-23 = 100) |
-| `backend/data/benchmark_rates.csv` | 20 | the ten sections per market. SG base year 2010 (SGD), IN base year 2023 (INR). All indicative seed values, because the DSR and InfoNet schedules behind them are licensed |
+| `backend/data/benchmark_rates.csv` | 20 | the ten sections per market, rebuilt from the schedules of rates. **11 are SOR-derived** (`is_placeholder: false`, expressed at `base_quarter` 2026Q2): Singapore Excavation, Concrete, Reinforcement, Formwork, Masonry, Waterproofing and Plaster from the BCA Schedule of Rates May 2022; India Piling, Plaster, Waterproofing and M&E Containment from CPWD DSR 2021 Vol-II. **9 are retained estimates** (`is_placeholder: true`) for sections the loaded extracts do not reach. Generated by `make rates`; `make verify-seed` re-derives each of the 11 from the SOR lines it claims |
 | `backend/data/regional_factors.csv` | 13 | 12 Indian cities plus Singapore, with the multiplier, its source and its limitations |
 | `backend/data/sample_boq.csv` | 20 | Singapore demonstration BoQ, SMM2 wording, SGD |
 | `backend/data/sample_boq_india.csv` | 20 | India demonstration BoQ, IS 1200 / DSR wording, INR |

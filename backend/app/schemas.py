@@ -36,6 +36,10 @@ class CountryOut(BaseModel):
     measurement_note: str
     default_tpi_series: str
     default_cpi_series: str = ""
+    # The series a benchmark may be run against for this market. One per market: the rate
+    # library was derived from a single published schedule of rates, so a different index
+    # would escalate those rates with a series they do not belong to.
+    selectable_tpi_series: list[str] = []
     unit_convention: str
     sources: list[SourceOut]
 
@@ -130,6 +134,9 @@ class BenchmarkRateOut(ORMModel):
     base_rate: float
     currency: str
     base_year: int
+    # The quarter the rate is expressed at, e.g. "2026Q2", or "" when it is at the index
+    # series' own base year. The engine escalates from here to the tender quarter.
+    base_quarter: str = ""
     source: str
     source_url: str
     source_date: str
@@ -364,6 +371,9 @@ class BenchmarkLine(ORMModel):
     tpi_base_value: float
     tpi_ratio: float
     tpi_fallback_used: bool
+    # The quarter the library rate is expressed at, e.g. "2026Q2", or "" when the rate is
+    # at the index series' own base year. It is the denominator the index ratio used.
+    rate_base_quarter: str = ""
 
     # Index bridge: how the index value for the tender quarter was obtained when the
     # selected series had not published that quarter yet. The bridge runs on a
@@ -613,6 +623,11 @@ class IndexCoverageOut(BaseModel):
     classification_standard: str
     preferred_producer_series: str = ""
     preferred_consumer_series: str = ""
+    # How a benchmark rate reaches the quarter being priced in this market: which price
+    # index carries it, and of what kind ("producer" | "consumer" | "none").
+    carry_index_kind: str = "none"
+    carry_index_series: str = ""
+    carry_index_note: str = ""
     producer_series_count: int = 0
     consumer_series_count: int = 0
     sections: list[dict] = Field(default_factory=list)

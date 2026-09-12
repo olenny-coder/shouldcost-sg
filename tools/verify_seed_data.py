@@ -14,6 +14,11 @@ What it checks:
 * **India producer price indexes** (`backend/data/price_series.csv`, `kind = PPI`) against the
   Office of the Economic Adviser's OPPI/WPI workbook: all 16 commodity baskets, every month, at the
   published basket weight. These are the series the bridge reaches for first.
+* **The benchmark rate library** (`backend/data/benchmark_rates.csv`) against the two schedules of
+  rates in ../SOR data/. Every derived rate is re-computed here as the median of the SOR lines it
+  claims to come from, so "these rates are derived from the BCA and CPWD schedules" is a checked
+  claim: change a mapping rule in build_benchmark_rates.py without regenerating the CSV, and this
+  fails.
 * **Singapore material prices** (`backend/data/material_prices.csv`) against
   SingStat table M211671.
 * **India WPI** (`backend/data/tpi_series.csv`, `is_placeholder = false`) against
@@ -29,8 +34,10 @@ README section "The real sources, and how to reach them".
 from __future__ import annotations
 
 import csv
+import io
 import json
 import re
+import statistics
 import sys
 from pathlib import Path
 
@@ -49,6 +56,43 @@ CPI_CSV = DATA / "cpi_series.csv"
 MATERIALS_CSV = DATA / "material_prices.csv"
 TPI_CSV = DATA / "tpi_series.csv"
 PRICE_SERIES_CSV = DATA / "price_series.csv"
+BENCHMARK_CSV = DATA / "benchmark_rates.csv"
+
+# The schedules of rates the benchmark library is derived from. They live outside the
+# repository, alongside the other publisher downloads.
+SOR_DIR = REALDATA.parent / "SOR data"
+SOR_SG = SOR_DIR / "Singapore SOR.csv"
+SOR_IN = SOR_DIR / "India SOR.csv"
+
+# Mirrors of the mapping in .realdata/build_benchmark_rates.py. Deliberately explicit and
+# duplicated: the point of this check is to fail when the CSV and those rules disagree.
+SOR_EXCLUDE = ("extra over", "extra for", "deduct", "less ", "dismantl", "demolish",
+               "repair", "repainting", "painting", "cleaning", "raking out",
+               "pointing on", "cutting holes", "grinding")
+SOR_RULES = {
+    "SG": {
+        "Excavation": ({"II"}, "m3", None, 1.0, None),
+        "Concrete": ({"III"}, "m3",
+                     {"Lean/Mass Concrete", "Reinforced Concrete", "Green Concrete"}, 1.0, None),
+        "Reinforcement": ({"III"}, "kg", {"Bar reinforcement"}, 1000.0, None),
+        "Formwork": ({"III"}, "m2", {"Timber Formwork", "Metal Formwork"}, 1.0, None),
+        "Masonry": ({"V"}, "m2", {"Clay Bricks", "Concrete Blocks"}, 1.0, None),
+        "Waterproofing": ({"V"}, "m2",
+                          {"Damp Proof Membrane",
+                           "Waterproofing System to Ground Slab / Basement",
+                           "Waterproofing System to Interior/Exterior Wet Areas",
+                           "Waterproofing System to Water-retaining Structure"}, 1.0, None),
+        "Plaster": ({"XII"}, "m2", None, 1.0, None),
+    },
+    "IN": {
+        "Piling": ({"20"}, "metre", None, 1.0, None),
+        "Waterproofing": ({"22"}, "sqm", None, 1.0, None),
+        # Chapter 13 is plastering, but it also carries pointing and mortar bands, so the
+        # description filter is part of the rule rather than an afterthought.
+        "Plaster": ({"13"}, "sqm", None, 1.0, ("plaster",)),
+        "M&E Containment": ({"17", "18", "19", "23"}, "metre", None, 1.0, None),
+    },
+}
 
 # Every seeded producer series, mapped to the published commodity name it must
 # reproduce, and the published weight that name carries in the index basket.
@@ -420,6 +464,84 @@ def check_ppi() -> None:
     )
 
 
+def check_sor_rates() -> None:
+    """Re-derive every SOR-derived benchmark rate from the schedule of rates itself."""
+    if not SOR_SG.exists() or not SOR_IN.exists():
+        print(f"[SKIP] Benchmark rate library: {SOR_DIR} not found")
+        return
+
+    def load(path):
+        lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
+        return list(csv.DictReader(io.StringIO("\n".join(l for l in lines if not l.startswith("#")))))
+
+    def median_for(rows, spec, code_of, unit_of, rate_of):
+        chapters, want_unit, labels, factor, contains = spec
+        label_of = lambda d: d.split(":")[0].strip() if ":" in d else ""
+        values = []
+        for row in rows:
+            if code_of(row) not in chapters:
+                continue
+            if labels is not None and label_of(row["Description"]) not in labels:
+                continue
+            if contains is not None and not any(c in row["Description"].lower() for c in contains):
+                continue
+            if unit_of(row).strip() != want_unit:
+                continue
+            if any(p in row["Description"].lower() for p in SOR_EXCLUDE):
+                continue
+            try:
+                rate = float(rate_of(row))
+            except (TypeError, ValueError):
+                continue
+            if rate > 0:
+                values.append(rate * factor)
+        return sorted(values)
+
+    seeded: dict[tuple[str, str], tuple[float, bool]] = {}
+    with BENCHMARK_CSV.open(encoding="utf-8-sig", newline="") as handle:
+        for row in csv.DictReader(handle):
+            seeded[(row["country"], row["smm2_section"])] = (
+                float(row["base_rate"]),
+                row["is_placeholder"].strip().lower() == "true",
+            )
+
+    sg_rows, in_rows = load(SOR_SG), load(SOR_IN)
+    mismatches: list[str] = []
+    checked = 0
+    for (country, section), (value, retained) in sorted(seeded.items()):
+        rule = SOR_RULES.get(country, {}).get(section)
+        if rule is None:
+            continue
+        rows, code_of, unit_of, rate_of = (
+            (sg_rows, lambda r: r["Code"].split(".")[0].strip(),
+             lambda r: r["Unit"], lambda r: r["Estimated_Rate_2026_SGD"])
+            if country == "SG" else
+            (in_rows, lambda r: r["Code No."].split(".")[0].strip(),
+             lambda r: r["Unit"], lambda r: r["Estimated_Rate_2026_INR"])
+        )
+        values = median_for(rows, rule, code_of, unit_of, rate_of)
+        if not values:
+            mismatches.append(f"{country} {section}: no SOR line matches the mapping rule")
+            continue
+        checked += 1
+        expected = statistics.median(values)
+        if retained:
+            mismatches.append(f"{country} {section}: seeded as retained but the SOR covers it")
+        if abs(value - expected) > 0.01:
+            mismatches.append(
+                f"{country} {section}: seeded {value:,.2f} vs median of {len(values)} SOR "
+                f"line(s) {expected:,.2f}"
+            )
+
+    retained = {k for k, v in seeded.items() if v[1]}
+    report(
+        f"Benchmark rate library (BCA SOR + CPWD DSR), {checked} derived section(s), "
+        f"{len(retained)} retained",
+        checked,
+        mismatches,
+    )
+
+
 def main() -> int:
     print(f"Verifying seeded reference data against {REALDATA}\n")
     check_cpi()
@@ -427,6 +549,7 @@ def main() -> int:
     check_materials()
     check_wpi()
     check_ppi()
+    check_sor_rates()
     print(f"\n{checks} published value(s) checked; {len(problems)} problem(s).")
     if problems:
         print("The seed data has drifted from its source. Refresh it before trusting the app.")

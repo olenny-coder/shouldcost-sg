@@ -169,6 +169,12 @@ class BenchmarkRate(Base):
     scope_inclusions: Mapped[str] = mapped_column(Text, nullable=False)
     scope_exclusions: Mapped[str] = mapped_column(Text, nullable=False)
     confidence: Mapped[str] = mapped_column(String(16), nullable=False)
+    # The quarter the rate is EXPRESSED at, e.g. "2026Q2". When set, the engine escalates
+    # the rate from that quarter to the tender quarter using the index, instead of from
+    # the index series' own base year. This matters for a library that has been
+    # cumulative-adjusted to a later quarter: escalating it from 2010 as well would apply
+    # the same movement twice. Empty means "at the series base year", the prior behaviour.
+    base_quarter: Mapped[str] = mapped_column(String(8), nullable=False, default="")
     is_placeholder: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
     provenance_note: Mapped[str] = mapped_column(Text, nullable=False, default="")
     replace_with: Mapped[str] = mapped_column(Text, nullable=False, default="")

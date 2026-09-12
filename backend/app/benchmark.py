@@ -64,6 +64,12 @@ UNCLASSIFIED = classifier.UNCLASSIFIED
 # TODO: replace with the actual base value published for each index series.
 DEFAULT_BASE_YEAR_INDEX_VALUE = 100.0
 
+# The quarter the bundled rate library is expressed at. The demonstration bills default
+# to pricing here, so the sample shows the library as built and the index ratio is 1.0
+# for every SOR-derived section. Every other quarter is still selectable: the index then
+# carries the rates forward from this quarter, and the movement is disclosed.
+DEFAULT_TENDER_QUARTER = "2026Q2"
+
 # Assumed split of the rate gap between the tendered BoQ rate and the base-year
 # benchmark rate. This is an APPORTIONMENT, not a measurement.
 # TODO: replace with measured material/labour/plant splits from a rate build-up
@@ -793,6 +799,10 @@ class LineResult:
     tpi_base_value: float
     tpi_ratio: float
     tpi_fallback_used: bool
+    # The quarter the library rate is expressed at, when the library states one. Empty
+    # means the rate is at the index series' own base year. Reported so a reviewer can
+    # see which denominator the escalation used.
+    rate_base_quarter: str
     # Index bridge: the modelled step that carried a stale observation forward. The
     # bridge runs on a producer price index where the market publishes one, so the
     # kind travels with the line instead of being assumed to be a CPI.
@@ -821,6 +831,15 @@ class LineResult:
     # residual proportional to quantity x base_rate x 5e-7 (material on a large BoQ)
     # that would otherwise land in `unexplained`.
     tpi_ratio_exact: float = 0.0
+    # The benchmark base rate at full precision. benchmark_base_rate is rounded to 2dp for
+    # display, and the waterfall must not build money out of a rounded rate: the difference
+    # grows with quantity and the regional multiplier and lands in the unexplained residual,
+    # which is meant to be a rounding artefact and nothing else.
+    benchmark_base_rate_exact: float | None = None
+    # The same ratio computed from the PUBLISHED observation only, so the waterfall can
+    # split total index movement into "since the rate library's base quarter" and "the
+    # modelled carry-forward on top of it".
+    tpi_ratio_published_exact: float | None = None
 
 
 @dataclass
@@ -984,12 +1003,71 @@ def build_benchmark(
     rates = load_benchmark_rates(session, country=registry.code)
     effective_tpi = _effective_tpi_value(tpi.value, applied)
     ratio = tpi.ratio_for(effective_tpi)
+
+    # ------------------------------------------------------------------ base quarter --
+    # A rate library row may state the quarter its price level is expressed at. The
+    # SOR-derived rows do: they are already cumulative-adjusted to 2026Q2, so the index
+    # denominator for those rows is the index AT 2026Q2, not the series' own base year.
+    # Escalating from the series base as well would apply the same movement twice -
+    # 2010->2026 on top of a rate that already contains 2022->2026.
+    #
+    # Rows with no base_quarter keep the previous behaviour exactly (the series base
+    # value), so nothing that predates this feature changes.
+    base_index_cache: dict[str, float] = {}
+
+    def _index_at(quarter: str) -> float:
+        """The index at a quarter, bridged the same way as the tender quarter.
+
+        Deliberately WITHOUT the analyst's index shift: that shift is a statement about
+        the tender quarter, so applying it to both ends of the ratio would cancel it out.
+        """
+        if quarter not in base_index_cache:
+            resolved = resolve_tpi(
+                session, tpi.series_name, quarter, country=registry.code, bridge=index_bridge
+            )
+            base_index_cache[quarter] = resolved.value
+        return base_index_cache[quarter]
+
+    def ratio_denominator(rate_row) -> tuple[float, str]:
+        """(the index level the rate is expressed at, the quarter if the library states one).
+
+        The second element is "" when the row does not state a quarter - the rate is then
+        at the index series' own base YEAR, which is not a quarter and must not be parsed
+        as one.
+        """
+        stated = (getattr(rate_row, "base_quarter", "") or "").strip()
+        if stated:
+            return _index_at(stated), stated
+        if not tpi.base_value:
+            raise TPILookupError("TPI base value is zero; cannot compute a ratio.")
+        return tpi.base_value, ""
+
+    def ratios_for(rate_row) -> tuple[float, float]:
+        """(bridged ratio, published-only ratio) for one library row.
+
+        The second is what the waterfall calls market risk: the movement the index has
+        actually PUBLISHED since the rate library's base quarter. When the library is
+        expressed at or after the last published observation - which is the case here,
+        with rates at 2026Q2 against an index last published at 2024Q4 - nothing since
+        the rate base has been published at all, so the whole difference is the modelled
+        carry-forward and market risk is zero. Reporting the raw backwards ratio instead
+        would book a negative "market risk" that is really the unwinding of the bridge.
+        """
+        denominator, stated = ratio_denominator(rate_row)
+        bridged_ratio = effective_tpi / denominator
+        if stated and quarter_sort_key(stated) >= quarter_sort_key(tpi.resolved_quarter):
+            return bridged_ratio, 1.0
+        return bridged_ratio, effective_tpi_published / denominator
     # The same composition, but starting from the PUBLISHED observation instead of
     # the bridged one. The difference between the two ratios is exactly the CPI
     # bridge, which the waterfall reports as its own step. An absolute override
     # replaces both levels, so it contributes nothing to the bridge step.
     effective_tpi_published = _effective_tpi_value(tpi.value_published, applied)
     ratio_published_used = tpi.ratio_for(effective_tpi_published)
+    # Which quarters the loaded rate library is expressed at, for the disclosure text.
+    stated_quarters = sorted(
+        {r.base_quarter for r in rates.values() if (r.base_quarter or "").strip()}
+    )
     bridge = tpi.bridge
     bridged = tpi.bridge_applied
 
@@ -1162,6 +1240,21 @@ def build_benchmark(
             f"{region.factor:.3f} multiplier on every benchmark base rate, and that multiplier is "
             f"an INDICATIVE estimate, not a published city index. {region.replace_with}"
         )
+    if stated_quarters:
+        # The rate library is expressed at a later quarter than the index series' own base
+        # year. Say so, and say that the index at those quarters is itself derived, because
+        # the reader cannot see the denominator from any single number on the page.
+        listed = ", ".join(stated_quarters)
+        assumes.append(
+            f"ASSUMED: the {registry.code} benchmark rate library is expressed at {listed}, not "
+            f"at the {tpi.series_name} base year of {tpi.base_year}. Rates in a section that "
+            f"states a base quarter are escalated from THAT quarter to the tender quarter, "
+            f"which is why the ratio for those sections differs from the one on a retained "
+            f"estimate. The {tpi.series_name} index has published to {tpi.resolved_quarter}, so "
+            f"its value at {listed} is itself DERIVED by carrying that observation forward - and "
+            f"the schedules of rates were themselves cumulative-adjusted to {listed} by the "
+            f"publisher's own stated factor, not by this app."
+        )
     assumes.append(
         f"ASSUMED: benchmark base rates are multiplied by {region.factor:.3f} for "
         f"{region.region_name} ({region.region_code}). Source of the factor: {region.source}. "
@@ -1268,6 +1361,7 @@ def build_benchmark(
                     tpi_value_published=round(tpi.value_published, 4),
                     tpi_base_value=tpi.base_value,
                     tpi_ratio=round(ratio, 6),
+                    rate_base_quarter=(rate_row.base_quarter or "") if rate_row is not None else "",
                     tpi_fallback_used=tpi.fallback_used,
                     tpi_bridged=bridged,
                     cpi_bridge_factor=round(tpi.bridge_factor, 6),
@@ -1294,6 +1388,14 @@ def build_benchmark(
 
         section_scale = _section_scale(applied, item.smm2_section)
 
+        # The index ratio this line is escalated by. A library row that states a base
+        # quarter is escalated from that quarter; everything else, including an
+        # analyst-supplied rate, keeps the series-level ratio.
+        if manual is None and rate_row is not None:
+            line_ratio, line_ratio_published = ratios_for(rate_row)
+        else:
+            line_ratio, line_ratio_published = ratio, ratio_published_used
+
         if manual is not None:
             # An analyst-supplied rate benchmarks the line regardless of why the
             # library could not, which is the whole point of supplying one.
@@ -1319,11 +1421,11 @@ def build_benchmark(
             is_indexed = True
             effective_region_factor = region.factor
             scope_excluded = item.smm2_section in exclusion_hits
-            scope_factor = (1.0 / ratio) if scope_excluded else 1.0
+            scope_factor = (1.0 / line_ratio) if scope_excluded else 1.0
             if scope_excluded:
                 flags.append("scope_excluded")
             adjusted_base_rate = rate_row.base_rate * region.factor * (1.0 + section_scale / 100.0)
-            adjusted = adjusted_base_rate * ratio * scope_factor
+            adjusted = adjusted_base_rate * line_ratio * scope_factor
 
         # ---------------------------------------------------- overheads & margin --
         # Analyst-supplied percentages that turn a benchmark RATE into a FULL cost:
@@ -1413,9 +1515,12 @@ def build_benchmark(
                 tpi_value=round(effective_tpi, 4),
                 tpi_value_published=round(tpi.value_published, 4),
                 tpi_base_value=tpi.base_value,
-                tpi_ratio=round(ratio, 6),
+                tpi_ratio=round(line_ratio, 6),
                 # Full precision for the waterfall; see the LineResult docstring.
-                tpi_ratio_exact=ratio,
+                tpi_ratio_exact=line_ratio,
+                tpi_ratio_published_exact=line_ratio_published,
+                benchmark_base_rate_exact=adjusted_base_rate,
+                rate_base_quarter=(rate_row.base_quarter or "") if rate_row is not None else "",
                 tpi_fallback_used=tpi.fallback_used,
                 tpi_bridged=bridged,
                 cpi_bridge_factor=round(tpi.bridge_factor, 6),
@@ -1787,14 +1892,30 @@ def _build_waterfall(
         """The index ratio at full precision (never the rounded display value)."""
         return line.tpi_ratio_exact or line.tpi_ratio
 
+    def base_of(line) -> float:
+        """The benchmark base rate at full precision (never the rounded display value)."""
+        exact = getattr(line, "benchmark_base_rate_exact", None)
+        return exact if exact is not None else line.benchmark_base_rate
+
+    def published_ratio_of(line) -> float:
+        """The same ratio from the PUBLISHED observation only.
+
+        Per line, because a library row that states its own base quarter has a different
+        denominator from one that does not. The movement from that denominator to the last
+        published observation is market risk; everything above it is the modelled
+        carry-forward.
+        """
+        published = getattr(line, "tpi_ratio_published_exact", None)
+        if published:
+            return published
+        return ratio_published_used if ratio_published_used is not None else ratio_of(line)
+
     combined_raw = sum(
-        l.quantity * l.benchmark_base_rate * (ratio_of(l) - 1.0) for l in matched
+        l.quantity * base_of(l) * (ratio_of(l) - 1.0) for l in matched
     )
     market_risk = round(
         sum(
-            l.quantity
-            * l.benchmark_base_rate
-            * ((ratio_published_used if ratio_published_used is not None else ratio_of(l)) - 1.0)
+            l.quantity * base_of(l) * (published_ratio_of(l) - 1.0)
             for l in matched
         ),
         2,
@@ -1804,12 +1925,12 @@ def _build_waterfall(
     cpi_bridge = round(combined_raw, 2) - market_risk
     scope = round(
         sum(
-            l.quantity * l.benchmark_base_rate * ratio_of(l) * (l.scope_factor - 1.0)
+            l.quantity * base_of(l) * ratio_of(l) * (l.scope_factor - 1.0)
             for l in matched
         ),
         2,
     )
-    rate_gap = sum(l.quantity * (l.benchmark_base_rate - l.boq_rate) for l in matched)
+    rate_gap = sum(l.quantity * (base_of(l) - l.boq_rate) for l in matched)
     material = round(rate_gap * MATERIAL_SHARE, 2)
     labour = round(rate_gap * LABOUR_SHARE, 2)
     # Overheads and margin are additive and computed from the benchmarked cost only,

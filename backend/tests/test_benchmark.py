@@ -53,17 +53,39 @@ def test_tpi_up_raises_the_adjusted_benchmark_rate(session, sample_upload_id) ->
     assert tpi.ratio > 1.0
 
     result = _run(session, sample_upload_id, "BCA")
-    concrete = [
+    # A section whose rate is still at the index series' own base year is escalated by the
+    # full ratio. The SOR-derived sections are expressed at 2026Q2 instead, so they are
+    # escalated only from there - asserted in its own test below.
+    # scope_factor = 1/ratio holds an excluded section at the library level, so the
+    # escalation is only visible on a line the series does not exclude.
+    at_series_base = [
         l for l in result.lines
-        if l.smm2_section == "Concrete" and l.is_benchmarked and "columns and walls" in l.raw_description
+        if l.is_benchmarked and l.rate_base_quarter == "" and not l.scope_excluded
     ]
-    assert len(concrete) == 1
-    line = concrete[0]
-    assert line.benchmark_base_rate == pytest.approx(145.00)
-    assert line.adjusted_benchmark_rate == pytest.approx(145.00 * 1.392, abs=0.01)
-    assert line.adjusted_benchmark_rate > line.benchmark_base_rate
-    assert line.tpi_ratio == pytest.approx(1.392, abs=1e-6)
-    assert line.basis == "derived"
+    assert at_series_base, "the sample must contain a section still at the series base"
+    for line in at_series_base:
+        assert line.tpi_ratio == pytest.approx(1.392, abs=1e-6)
+        assert line.adjusted_benchmark_rate == pytest.approx(
+            line.benchmark_base_rate * 1.392, abs=0.01
+        )
+        assert line.adjusted_benchmark_rate > line.benchmark_base_rate
+        assert line.basis == "derived"
+
+
+def test_sor_derived_rates_are_already_at_their_base_quarter(session, sample_upload_id) -> None:
+    """A rate stated at 2026Q2 is escalated from 2026Q2, not from the index base year.
+
+    This is the point of the base_quarter column. The BCA rates were cumulative-adjusted
+    2022 -> 2026 by the schedule of rates itself, so applying the series' 2010 -> 2024
+    movement on top would apply the same inflation twice. At the library's own quarter
+    the ratio is therefore exactly 1.
+    """
+    result = _run(session, sample_upload_id, "BCA", quarter="2026Q2")
+    sor = [l for l in result.lines if l.is_benchmarked and l.rate_base_quarter == "2026Q2"]
+    assert sor, "the sample must contain SOR-derived sections"
+    for line in sor:
+        assert line.tpi_ratio == pytest.approx(1.0, abs=1e-9)
+        assert line.adjusted_benchmark_rate == pytest.approx(line.benchmark_base_rate, abs=0.01)
 
 
 # --------------------------------------------------------------------------- #
@@ -108,14 +130,16 @@ def test_tpi_down_lowers_the_adjusted_benchmark_rate(session, sample_upload_id, 
     for line in matched:
         assert line.adjusted_benchmark_rate < line.benchmark_base_rate
 
-    concrete = [
-        l for l in matched
-        if l.smm2_section == "Concrete" and "columns and walls" in l.raw_description
-    ][0]
-    assert concrete.adjusted_benchmark_rate == pytest.approx(145.00 * 0.95, abs=0.01)
-    # Tendered 231.00 against a deflated benchmark is a larger overrun than in the TPI-up case.
-    assert concrete.variance_abs == pytest.approx(231.00 - 145.00 * 0.95, abs=0.01)
-    assert concrete.variance_pct > 60.0
+    # Measured on a section still at the series' own base year: a rate expressed at
+    # 2026Q2 cannot be moved by a series whose last observation is 2024Q4.
+    at_series_base = [
+        l for l in matched if l.rate_base_quarter == "" and not l.scope_excluded
+    ]
+    assert at_series_base
+    for line in at_series_base:
+        assert line.adjusted_benchmark_rate == pytest.approx(
+            line.benchmark_base_rate * 0.95, abs=0.01
+        )
 
 
 # --------------------------------------------------------------------------- #
@@ -267,11 +291,16 @@ def test_waterfall_reconciles_boq_total_to_should_cost_total(session, sample_upl
     assert amounts["overhead"] == 0.0
     assert amounts["margin"] == 0.0
 
-    # The demonstration run prices 2024Q4, which every series has published, so
-    # the bridge is present but exactly zero.
-    assert amounts["cpi_bridge"] == 0.0
+    # The tender quarter itself needs no bridge - the index has published 2024Q4 - so
+    # index_bridge reports no carry-forward for the quarter being priced.
     assert result.totals["index_bridge_applied"] is False
     assert result.index_bridge["applied"] is False
+    # The bridge step is still non-zero, because the rate library is expressed at 2026Q2
+    # and the index at 2026Q2 is itself derived by carrying the 2024Q4 observation
+    # forward. That carry-forward is modelled, so it belongs in the bridge step even
+    # though the tender quarter needed no bridge of its own.
+    assert amounts["cpi_bridge"] != 0.0
+    assert any("expressed at" in a for a in result.assumptions)
     # With no overheads or margin supplied, the full total is the benchmark total.
     assert result.totals["full_should_cost_total"] == result.totals["should_cost_total"]
 
@@ -306,8 +335,12 @@ def test_scope_and_market_risk_cancel_for_excluded_sections(session, sample_uplo
     assert piling_ids
     for line in result.lines:
         if line.item_id in piling_ids:
-            market = line.quantity * line.benchmark_base_rate * (line.tpi_ratio - 1.0)
-            scope = line.quantity * line.benchmark_base_rate * line.tpi_ratio * (line.scope_factor - 1.0)
+            # The EXACT ratio, not the 6dp display value: scope_factor is 1/exact_ratio,
+            # so pairing it with a rounded ratio leaves a residual proportional to
+            # quantity x base_rate x 5e-7.
+            exact = line.tpi_ratio_exact or line.tpi_ratio
+            market = line.quantity * line.benchmark_base_rate * (exact - 1.0)
+            scope = line.quantity * line.benchmark_base_rate * exact * (line.scope_factor - 1.0)
             assert market + scope == pytest.approx(0.0, abs=1e-6)
 
 
@@ -321,11 +354,15 @@ def test_every_benchmarked_line_carries_full_provenance(session, sample_upload_i
         assert p is not None
         for field in (
             "source", "source_date", "base_year", "scope_inclusions",
-            "scope_exclusions", "confidence", "is_placeholder", "replace_with",
+            "scope_exclusions", "confidence", "is_placeholder",
         ):
             assert p[field] not in (None, ""), f"{field} missing on line {line.item_id}"
-        assert p["is_placeholder"] is True
-        assert p["replace_with"].startswith("# TODO:")
+        # A rate derived from a published schedule of rates is NOT indicative, and has
+        # nothing to replace. A retained estimate is, and must say what to replace it with.
+        if p["is_placeholder"]:
+            assert p["replace_with"].startswith("# TODO:")
+        else:
+            assert p["replace_with"] == ""
 
 
 def test_tpi_up_and_down_move_variance_in_opposite_directions(session, sample_upload_id, deflationary_series) -> None:

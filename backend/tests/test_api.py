@@ -251,7 +251,9 @@ def test_benchmark_response_distinguishes_measured_derived_assumed(client_module
     for line in body["lines"]:
         if line["is_benchmarked"]:
             prov = line["provenance"]
-            assert prov["is_placeholder"] is True
+            # The library is now mixed: rows derived from a published schedule of rates are
+            # not indicative, and retained estimates are. Both must state their provenance.
+            assert isinstance(prov["is_placeholder"], bool)
             assert prov["source"] and prov["source_date"] and prov["base_year"]
             assert prov["scope_inclusions"] and prov["scope_exclusions"]
             assert prov["confidence"]
@@ -351,14 +353,25 @@ def test_benchmark_rate_library_exposes_full_provenance(client_module) -> None:
     rows = client_module.get("/api/indices/benchmark-rates").json()
     assert len(rows) == 10
     for row in rows:
-        assert row["is_placeholder"] is True
         assert row["source"] and row["source_date"]
         assert row["scope_inclusions"] and row["scope_exclusions"]
         assert row["confidence"] in {"high", "medium", "low"}
-        assert row["base_year"] == 2010
         assert row["country"] == "SG"
         assert row["currency"] == "SGD"
-        assert row["replace_with"].startswith("# TODO:")
+        assert row["provenance_note"]
+        if row["is_placeholder"]:
+            # A retained estimate: at the old basis, with a named replacement.
+            assert row["replace_with"].startswith("# TODO:")
+            assert row["base_quarter"] == ""
+        else:
+            # Derived from the schedule of rates: expressed at a stated quarter, nothing
+            # to replace, and the provenance says how it was derived.
+            assert row["base_quarter"] == "2026Q2"
+            assert row["base_year"] == 2026
+            assert row["replace_with"] == ""
+            assert "DERIVED TO CURRENT" in row["provenance_note"]
+    # The preliminaries estimate is retained, not derived, at the user's request.
+    assert any(r["smm2_section"] == "Preliminaries" and r["is_placeholder"] for r in rows)
 
 
 def test_classifier_rules_are_auditable(client_module) -> None:

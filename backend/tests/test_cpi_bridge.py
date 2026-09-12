@@ -212,10 +212,14 @@ def test_bridge_is_its_own_waterfall_step(session) -> None:
     # pre-bridge engine reported, and the identity still closes.
     identity = result.totals["boq_total"] + sum(w["amount"] for w in result.waterfall)
     assert identity == pytest.approx(result.totals["should_cost_total"], abs=0.01)
-    # market_risk is now the PUBLISHED observation movement only.
+    # market_risk is now the PUBLISHED observation movement only, measured per line from
+    # whatever denominator that line's rate is expressed at: the series base year for a
+    # retained estimate, and the library's own quarter for a rate derived to 2026Q2.
     assert components["market_risk"]["amount"] == pytest.approx(
         sum(
-            line.quantity * line.benchmark_base_rate * (line.tpi_value_published / line.tpi_base_value - 1.0)
+            line.quantity
+            * (line.benchmark_base_rate_exact or line.benchmark_base_rate)
+            * ((line.tpi_ratio_published_exact or line.tpi_value_published / line.tpi_base_value) - 1.0)
             for line in result.lines
             if line.is_benchmarked
         ),
@@ -275,12 +279,21 @@ def test_bridge_can_be_switched_off_and_holds_the_observation(session) -> None:
 
 
 def test_no_bridge_when_the_series_covers_the_quarter(session) -> None:
+    """No carry-forward is needed for the quarter being priced.
+
+    The waterfall's bridge step is still non-zero, and that is correct: the rate library is
+    expressed at 2026Q2, and the index at 2026Q2 is itself derived by carrying the 2024Q4
+    observation forward. That derivation is modelled, so it belongs in the bridge step even
+    though the tender quarter needed no bridge of its own.
+    """
     result = _run(session, quarter="2024Q4")
     assert result.index_bridge["applied"] is False
     assert result.index_bridge["reason"] == "index_observation_covers_requested_quarter"
     assert result.index_bridge["lag_quarters"] == 0
     components = {w["component"]: w["amount"] for w in result.waterfall}
-    assert components["cpi_bridge"] == 0.0
+    assert components["cpi_bridge"] != 0.0, (
+        "the library base quarter is unpublished, so its index is carried forward"
+    )
     assert not any("index_bridged" in line.flags for line in result.lines)
     assert result.totals["basis"] == "derived"
 
@@ -344,9 +357,11 @@ def test_absolute_override_replaces_the_bridged_level(session) -> None:
     result = _run(session, adjustments=IndexAdjustments(tpi_value_override=150.0))
     line = [l for l in result.lines if l.is_benchmarked][0]
     assert line.tpi_value == pytest.approx(150.0)
-    # An override is a full replacement, so the bridge contributes nothing.
+    # An override sets the index level at the TENDER quarter. It does not remove the
+    # carry-forward that produced the index at the library's own base quarter (2026Q2),
+    # which is a separate, still-modelled step on the retained sections.
     components = {w["component"]: w["amount"] for w in result.waterfall}
-    assert components["cpi_bridge"] == pytest.approx(0.0, abs=0.01)
+    assert components["cpi_bridge"] != 0.0
     assert "index_bridged" in line.flags  # the line is still disclosed as modelled
 
 

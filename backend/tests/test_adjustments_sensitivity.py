@@ -8,7 +8,7 @@ import pandas as pd
 import pytest
 from sqlalchemy import select
 
-from app.benchmark import build_benchmark, compute_sensitivity
+from app.benchmark import build_benchmark, compute_sensitivity, resolve_tpi
 from app.models import BoQUpload, BoQItem
 
 SAMPLE = "sample_boq.csv"
@@ -73,7 +73,20 @@ def test_tpi_value_override_replaces_the_published_value(session) -> None:
     benchmarked = [l for l in result.lines if l.is_benchmarked]
     assert all(l.tpi_value == pytest.approx(160.0) for l in benchmarked)
     assert all(l.tpi_value_published == pytest.approx(139.2) for l in benchmarked)
-    assert all(l.tpi_ratio == pytest.approx(1.6) for l in benchmarked)
+    # The override states the index value at the tender quarter, so the ratio it produces
+    # depends on what each rate's denominator is: 100 for a section still at the series
+    # base year, and the index at 2026Q2 for a section the library expresses there.
+    at_series_base = [l for l in benchmarked if l.rate_base_quarter == ""]
+    at_library_quarter = [l for l in benchmarked if l.rate_base_quarter]
+    assert at_series_base and at_library_quarter
+    for line in at_series_base:
+        assert line.tpi_ratio == pytest.approx(1.6)
+    # The denominator for those rows is the index at the library's own quarter, which the
+    # engine derives by carrying the last published observation forward.
+    at_library = resolve_tpi(session, "BCA", "2026Q2")
+    for line in at_library_quarter:
+        assert line.tpi_ratio < 1.6
+        assert line.tpi_ratio == pytest.approx(160.0 / at_library.value, abs=1e-6)
     assert any("overrode the BCA index value" in a for a in result.assumptions)
 
 
@@ -124,9 +137,10 @@ def test_scope_exclusion_still_cancels_market_risk_under_adjustment(session) -> 
     excluded = [l for l in result.lines if l.is_benchmarked and l.scope_excluded]
     assert excluded
     for line in excluded:
-        market = line.quantity * line.benchmark_base_rate * (line.tpi_ratio - 1.0)
+        exact = line.tpi_ratio_exact or line.tpi_ratio
+        market = line.quantity * line.benchmark_base_rate * (exact - 1.0)
         scope = (
-            line.quantity * line.benchmark_base_rate * line.tpi_ratio * (line.scope_factor - 1.0)
+            line.quantity * line.benchmark_base_rate * exact * (line.scope_factor - 1.0)
         )
         assert market + scope == pytest.approx(0.0, abs=1e-6)
 

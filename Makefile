@@ -7,7 +7,8 @@ BACKEND := backend
 FRONTEND := frontend
 
 .PHONY: help install install-backend install-frontend seed cpi-seed price-series-seed \
-        verify-seed upgrade-check test test-backend build dev dev-backend dev-frontend clean reset-db
+        rates sample-boqs verify-seed upgrade-check test test-backend build dev dev-backend \
+        dev-frontend clean reset-db
 
 help:
 	@echo "shouldcost-sg - available targets"
@@ -15,6 +16,8 @@ help:
 	@echo "  make seed      Load the bundled CSV seed data (idempotent)"
 	@echo "  make cpi-seed  Rebuild data/cpi_series.csv from the publisher downloads (.realdata/)"
 	@echo "  make price-series-seed  Rebuild data/price_series.csv (CPI + 16 India PPI baskets)"
+	@echo "  make rates              Rebuild the rate library from the BCA/CPWD schedules"
+	@echo "  make sample-boqs        Re-price the demonstration BoQs against the library"
 	@echo "  make verify-seed        Re-derive every seeded value from the publisher file"
 	@echo "  make upgrade-check      ETL against a copy of a database with the old schema"
 	@echo "  make test      Run the backend test suite"
@@ -55,6 +58,16 @@ verify-seed:
 # but the database is stale. `make upgrade-check`
 upgrade-check:
 	$(PY) tools/check_upgrade_path.py
+
+# Rebuild the benchmark rate library from the schedules of rates in ../SOR data/.
+# Writes backend/data/benchmark_rates.csv.  make rates
+rates:
+	$(PY) ../.realdata/build_benchmark_rates.py
+
+# Re-price the two demonstration BoQs against the current rate library, so the sample
+# variance report keeps showing a real spread of outcomes.  make sample-boqs
+sample-boqs:
+	$(PY) tools/build_sample_boqs.py
 
 test: test-backend
 

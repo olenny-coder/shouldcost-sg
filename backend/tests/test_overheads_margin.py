@@ -386,4 +386,7 @@ def test_india_run_grossed_up_with_region_and_bridge(session) -> None:
     )
     identity = result.totals["boq_total"] + sum(c["amount"] for c in result.waterfall)
     assert identity == pytest.approx(result.totals["full_should_cost_total"], abs=0.01)
-    assert abs([c for c in result.waterfall if c["component"] == "unexplained"][0]["amount"]) <= 0.05
+    # The waterfall builds every step from the base rate at FULL precision, so the residual
+    # is zero rather than accumulating the 2dp rounding of the displayed rate.
+    residual = [c for c in result.waterfall if c["component"] == "unexplained"][0]["amount"]
+    assert abs(residual) <= 0.01, residual

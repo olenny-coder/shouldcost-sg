@@ -34,6 +34,11 @@ class Country:
     # Empty means that kind is unavailable for the market.
     default_ppi_series: str = ""
     default_cpi_series: str = ""
+    # The series a benchmark may be run against. One per market: the rate library was derived
+    # from a single published schedule of rates per market, so pricing against a different
+    # index would escalate DSR-derived rates with a series they do not belong to. The other
+    # series stay loaded and charted on the index dashboard.
+    selectable_tpi_series: tuple[str, ...] = ()
     sources: tuple[Source, ...] = field(default_factory=tuple)
 
 
@@ -48,6 +53,9 @@ SINGAPORE = Country(
         "The industry classification standard used for Singapore building Bills of Quantities."
     ),
     default_tpi_series="BCA",
+    # BCA only: the benchmark rate library is derived from the BCA Schedule of Rates, so BCA
+    # is the only index that belongs with it.
+    selectable_tpi_series=("BCA",),
     # Singapore publishes producer price indices, but the machine-readable ones are
     # annual and 1-digit (SingStat M213461 / M213411) - too coarse to carry a
     # quarterly observation forward. No usable PPI, so the bridge falls back to CPI.
@@ -91,7 +99,12 @@ INDIA = Country(
         "building work the same way; the field is still called smm2_section for backward "
         "compatibility of the API."
     ),
-    default_tpi_series="WPI-CONST",
+    default_tpi_series="CPWD",
+    # CPWD only: the rate library is derived from the CPWD Delhi Schedule of Rates, and CPWD
+    # is the index published alongside it. WPI-CONST is a materials-only composite with no
+    # labour, plant or preliminaries content, so it cannot escalate a whole rate library
+    # without misstating every labour-heavy section.
+    selectable_tpi_series=("CPWD",),
     # India publishes a producer price index monthly and at commodity level
     # (Office of the Economic Adviser, base 2022-23). CPI-ALL is the fallback.
     default_ppi_series="PPI-ALL",
@@ -171,6 +184,7 @@ def registry_as_dicts() -> list[dict]:
                 "default_tpi_series": country.default_tpi_series,
                 "default_cpi_series": country.default_cpi_series,
                 "default_ppi_series": country.default_ppi_series,
+                "selectable_tpi_series": list(country.selectable_tpi_series),
                 "unit_convention": country.unit_convention,
                 "sources": [
                     {"name": s.name, "url": s.url, "what": s.what} for s in country.sources

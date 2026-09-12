@@ -191,16 +191,25 @@ Redeploying the service does **not** fix that. Run the ETL against the deployed 
 It is idempotent and upserts on natural keys, so it is safe to run against a live database: existing
 rows are updated, new rows are inserted, and **uploaded BoQs are left alone**.
 
-Adding a brand-new *table* needs no reset - ```create_all()``` creates it and the ETL fills it. Only a
-change to an **existing** table's **columns** needs ```--reset```, which drops everything including
-uploaded BoQs. To confirm which case you are in before deploying, run the upgrade check locally:
+There are two upgrade cases, and **neither needs a ```--reset```**:
+
+| Change | What handles it |
+|---|---|
+| A **new table** (```price_series```) | ```create_all()``` creates it; the ETL fills it |
+| A **new column** on an existing table (```benchmark_rates.base_quarter```) | ```db.add_missing_columns()``` runs inside ```init_db()``` and issues the ```ALTER TABLE ... ADD COLUMN``` |
+
+```add_missing_columns()``` is deliberately narrow: it only **adds** columns, never drops, retypes or
+renames one, and it refuses - loudly - to add a ```NOT NULL``` column that has no default, because that
+would silently insert NULLs. A change of that kind still needs ```--reset``` (and then a real migration
+tool is the right answer). To confirm before deploying, run the upgrade check locally:
 
 ```bash
 python tools/check_upgrade_path.py
 ```
 
-It copies your local SQLite database, drops the newest table to simulate the deployed schema, re-runs
-the ETL against the copy, and asserts the table is recreated and filled while uploaded BoQs survive.
+It copies your local SQLite database twice, removes the newest table from one copy and the newest
+column from the other to simulate a deployed schema, re-runs the ETL against each, and asserts both
+are brought up to date while **uploaded BoQs survive**.
 
 > **Do not run ```python -m app.etl``` in a plain shell without setting ```DATABASE_URL```.**
 > With no ```DATABASE_URL``` the app falls back to local SQLite, so the command succeeds, prints

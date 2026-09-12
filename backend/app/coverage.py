@@ -29,7 +29,7 @@ from sqlalchemy.orm import Session
 
 from .classifier import SMM2_SECTIONS, UNCLASSIFIED
 from .countries import DEFAULT_COUNTRY, get_country
-from .models import PriceSeries
+from .models import BenchmarkRate, PriceSeries
 
 
 @dataclass(frozen=True)
@@ -120,6 +120,11 @@ SECTION_NOTES: dict[str, str] = {
         "are unknown; classify them first."
     ),
 }
+
+
+def _confidence_rank(value: str) -> int:
+    """Mirror of the engine's preference order, so both pick the same row."""
+    return {"high": 0, "medium": 1, "low": 2}.get((value or "").lower(), 9)
 
 
 def _market_note(code: str, section: str, status: str) -> str:
@@ -363,6 +368,50 @@ def build_coverage(session: Session, country: str | None = None) -> dict:
         for section in (*SMM2_SECTIONS, UNCLASSIFIED)
     ]
 
+    # The rate library, per section. This is what actually prices a BoQ, so the coverage
+    # table states how each section's rate reaches the quarter being priced: derived from a
+    # published schedule of rates at a stated quarter, or a retained estimate still at the
+    # index series' own base year.
+    rates_by_section: dict[str, BenchmarkRate] = {}
+    for rate_row in session.scalars(
+        select(BenchmarkRate).where(BenchmarkRate.country == code)
+    ):
+        current = rates_by_section.get(rate_row.smm2_section)
+        if current is None or _confidence_rank(rate_row.confidence) < _confidence_rank(
+            current.confidence
+        ):
+            rates_by_section[rate_row.smm2_section] = rate_row
+
+    def rate_card(section: str) -> dict | None:
+        row = rates_by_section.get(section)
+        if row is None:
+            return None
+        stated = (row.base_quarter or "").strip()
+        return {
+            "base_rate": row.base_rate,
+            "unit": row.unit,
+            "base_year": row.base_year,
+            "base_quarter": stated,
+            "source": row.source,
+            "source_url": row.source_url,
+            "confidence": row.confidence,
+            "is_placeholder": row.is_placeholder,
+            "provenance_note": row.provenance_note,
+            "replace_with": row.replace_with,
+            # What the app does with it. A rate stated at a quarter is carried forward from
+            # that quarter by the index; a retained one is carried from the series' own base
+            # year, which is a longer and weaker step.
+            "carried_from": stated or str(row.base_year),
+        }
+
+    # Which price index the market uses to carry a rate forward, and of what kind.
+    if registry.default_ppi_series:
+        carry_kind, carry_series = "producer", registry.default_ppi_series
+    elif registry.default_cpi_series:
+        carry_kind, carry_series = "consumer", registry.default_cpi_series
+    else:
+        carry_kind, carry_series = "none", ""
+
     def gaps_for(section_coverage: SectionCoverage) -> list[dict]:
         own = market_gaps.get(section_coverage.section, ())
         # Fall back to the market-wide list rather than reporting nothing to do.
@@ -379,6 +428,15 @@ def build_coverage(session: Session, country: str | None = None) -> dict:
         "classification_standard": registry.measurement_standard,
         "preferred_producer_series": registry.default_ppi_series,
         "preferred_consumer_series": registry.default_cpi_series,
+        # How a benchmark rate reaches the quarter being priced, for this market.
+        "carry_index_kind": carry_kind,
+        "carry_index_series": carry_series,
+        "carry_index_note": (
+            f"Each section's rate is carried from its stated base quarter to the tender "
+            f"quarter by the {carry_series} {carry_kind} price index."
+            if carry_series
+            else "No price index is configured for this market."
+        ),
         "producer_series_count": sum(1 for n in grouped if grouped[n][0].kind == "PPI"),
         "consumer_series_count": sum(1 for n in grouped if grouped[n][0].kind != "PPI"),
         "sections": [
@@ -389,6 +447,7 @@ def build_coverage(session: Session, country: str | None = None) -> dict:
                 "labour_dominated": s.labour_dominated,
                 "note": s.note,
                 "market_note": _market_note(code, s.section, s.status),
+                "rate": rate_card(s.section),
                 "producer_series": s.producer,
                 "consumer_series": s.consumer,
                 "gap_sources": gap_sources.get(s.section, []),

@@ -48,8 +48,18 @@ def test_registry_exposes_both_markets_with_credible_sources() -> None:
     assert india.name == "India"
     assert india.currency == "INR"
     assert india.measurement_standard == "IS 1200 / CPWD DSR"
-    # The default India series must be a REAL one; the CPWD/NBO city indices remain placeholders.
-    assert india.default_tpi_series == "WPI-CONST"
+    # India benchmarks against CPWD: the rate library is derived from the CPWD Delhi
+    # Schedule of Rates, and CPWD is the index published alongside it. WPI-CONST remains
+    # loaded as a REAL materials series for the dashboard, but it carries no labour, plant
+    # or preliminaries content, so it cannot escalate a whole rate library.
+    assert india.default_tpi_series == "CPWD"
+    assert india.selectable_tpi_series == ("CPWD",)
+    sg = get_country("sg")
+    assert sg.default_tpi_series == "BCA"
+    assert sg.selectable_tpi_series == ("BCA",)
+    # Every market's only selectable series must be one its registry actually declares.
+    for country in (india, sg):
+        assert country.default_tpi_series in country.selectable_tpi_series
 
     singapore = COUNTRIES["SG"]
     assert singapore.currency == "SGD"
@@ -161,8 +171,10 @@ def test_countries_do_not_share_index_series(session) -> None:
 
 
 def test_india_sample_breaches_the_threshold_in_both_directions(session) -> None:
+    # The market's own default series: CPWD is the index the DSR-derived rates belong with.
+    # WPI-CONST is a materials-only composite and the app warns about the base mismatch.
     upload_id = _upload_id(session, IN_SAMPLE)
-    result = _run(session, upload_id, "WPI-CONST", country="IN")
+    result = _run(session, upload_id, "CPWD", country="IN")
     over = [l for l in result.lines if "over_threshold" in l.flags]
     under = [l for l in result.lines if "under_threshold" in l.flags]
     assert len(over) >= 2
@@ -177,9 +189,13 @@ def test_india_benchmark_base_rate_currency_is_inr(session) -> None:
     for line in benchmarked:
         # Indian benchmark rates are three to five figures in rupees, never SGD-scale.
         assert line.benchmark_base_rate > 100
-        assert line.provenance["base_year"] == 2023
-        assert "CPWD" in line.provenance["source"] or "NBO" in line.provenance["source"]
-        assert line.provenance["is_placeholder"] is True
+        prov = line.provenance
+        if prov["is_placeholder"]:
+            assert prov["base_year"] == 2023
+            assert "Retained" in prov["source"]
+        else:
+            assert prov["base_year"] == 2026
+            assert "DSR" in prov["source"] or "Schedule of Rates" in prov["source"]
 
 
 def test_both_markets_are_independent_in_one_database(session) -> None:
@@ -266,9 +282,13 @@ def test_benchmark_rates_endpoint_is_country_scoped(client_module) -> None:
     assert {r["classification_standard"] for r in india} == {"IS 1200 / CPWD DSR"}
     for row in india:
         assert row["currency"] == "INR"
-        assert row["base_year"] == 2023
-        assert row["is_placeholder"] is True
-        assert row["replace_with"].startswith("# TODO:")
+        if row["is_placeholder"]:
+            assert row["base_year"] == 2023
+            assert row["replace_with"].startswith("# TODO:")
+        else:
+            assert row["base_year"] == 2026
+            assert row["base_quarter"] == "2026Q2"
+            assert row["replace_with"] == ""
 
 
 def test_unknown_country_is_rejected(client_module) -> None:

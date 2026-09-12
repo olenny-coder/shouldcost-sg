@@ -94,7 +94,9 @@ export default function App() {
   const [sensitivity, setSensitivity] = useState(null)
 
   const [tab, setTab] = useState('upload')
-  const [tenderQuarter, setTenderQuarter] = useState('2024Q4')
+  // The quarter the rate library is expressed at, so a fresh run opens on the library
+  // as built. Every other quarter stays selectable and carries the index from here.
+  const [tenderQuarter, setTenderQuarter] = useState('2026Q2')
   const [tpiSeries, setTpiSeries] = useState('BCA')
   const [threshold, setThreshold] = useState('15')
   // How a stale index observation is brought up to the tender quarter.
@@ -182,12 +184,15 @@ export default function App() {
         setRegionCode(defaultRegion ? defaultRegion.region_code : (responses[5][0] || {}).region_code || '')
 
         const registry = countries.filter(function (c) { return c.code === countryCode })[0]
-        const names = Array.from(new Set(tpi.map(function (r) { return r.series_name }))).sort()
-        const preferred = registry && names.indexOf(registry.default_tpi_series) !== -1
-          ? registry.default_tpi_series
-          : (names[0] || 'BCA')
+        // The rate library was derived from ONE published schedule of rates per market, so
+        // a benchmark may only be run against the index that belongs with it. The other
+        // series stay loaded (the dashboard charts them) but are not selectable here.
+        const selectable = (registry && registry.selectable_tpi_series) || []
+        const preferred = selectable.length
+          ? selectable[0]
+          : (registry && registry.default_tpi_series) || 'BCA'
         const quarters = Array.from(new Set(tpi.map(function (r) { return r.quarter }))).sort()
-        let quarter = quarters.length ? quarters[quarters.length - 1] : '2024Q4'
+        let quarter = quarters.length ? quarters[quarters.length - 1] : '2026Q2'
         let series = preferred
 
         const sample = responses[4].filter(function (u) { return u.is_seeded_sample })[0]
@@ -449,7 +454,7 @@ export default function App() {
   const quarters = useMemo(function () {
     const set = []
     tpiRows.forEach(function (row) { if (set.indexOf(row.quarter) === -1) set.push(row.quarter) })
-    if (!set.length) return ['2024Q4']
+    if (!set.length) return ['2026Q2']
     // A tender priced today may fall in a quarter the index has not published
     // yet. Those quarters ARE selectable: the index is carried forward along the
     // published trend of a price index (or held, when bridging is switched off),
@@ -471,11 +476,16 @@ export default function App() {
     return set.sort().reverse()
   }, [tpiRows, priceRows])
 
+  // Only the series that belongs with the market's rate library is offered for pricing.
+  // Every loaded series is still charted on the index dashboard.
   const seriesNames = useMemo(function () {
-    const set = []
-    tpiRows.forEach(function (row) { if (set.indexOf(row.series_name) === -1) set.push(row.series_name) })
-    return set.length ? set.sort() : ['BCA']
-  }, [tpiRows])
+    const loaded = []
+    tpiRows.forEach(function (row) { if (loaded.indexOf(row.series_name) === -1) loaded.push(row.series_name) })
+    const selectable = (country && country.selectable_tpi_series) || []
+    const allowed = selectable.filter(function (name) { return loaded.indexOf(name) !== -1 })
+    if (allowed.length) return allowed
+    return loaded.length ? loaded.sort() : ['BCA']
+  }, [tpiRows, country])
 
   return (
     <div className="app">
