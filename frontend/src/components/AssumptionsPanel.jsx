@@ -126,13 +126,9 @@ export default function AssumptionsPanel(props) {
         <div id="assumptions-body">
           {indicativeLines > 0 && (
             <div className="notice notice-critical">
-              <strong>Indicative seed rates in this run.</strong> {indicativeLines} benchmark line(s)
-              are priced from the indicative rate library rather than a licensed schedule of rates -
-              flagged <code>is_placeholder: true</code>. The published <em>index</em> series are real
-              data, but these base rates are not, so they must not be used for a real tender
-              decision. Every such row carries a source_url and a{' '}
-              <code># TODO: replace with actual ...</code> marker naming the publication it stands in
-              for.
+              <strong>{indicativeLines} line(s) priced from a retained estimate.</strong> Not a
+              licensed schedule of rates - flagged <code>is_placeholder: true</code>, with a source
+              and a TODO. Do not use for a real tender decision.
             </div>
           )}
 
@@ -141,28 +137,20 @@ export default function AssumptionsPanel(props) {
               <strong>
                 Index carried forward with the {bridgeKindLong(bridgeKind(indexBridge))}.
               </strong>{' '}
-              The <code>{indexBridge.index_series}</code> series has no published observation for{' '}
-              <code>{indexBridge.requested_quarter}</code>; its last observation is{' '}
-              <code>{indexBridge.observation_quarter}</code> ({indexBridge.lag_quarters} quarter(s)
-              earlier). That observation was carried forward along the published movement in{' '}
-              <code>{bridgeSeries(indexBridge)}</code> from{' '}
-              {formatMonths(bridgeFromMonths(indexBridge))} ({fmt(bridgeFromValue(indexBridge))}) to{' '}
-              {formatMonths(bridgeToMonths(indexBridge))} ({fmt(bridgeToValue(indexBridge))}) - a
-              factor of <strong>{fmt(bridgeFactor(indexBridge), 4)}</strong>, giving{' '}
+              <code>{indexBridge.index_series}</code> has no published observation for{' '}
+              <code>{indexBridge.requested_quarter}</code> - last published{' '}
+              <code>{indexBridge.observation_quarter}</code>, {indexBridge.lag_quarters} quarter(s)
+              earlier. Carried forward on <code>{bridgeSeries(indexBridge)}</code>{' '}
+              ({formatMonths(bridgeFromMonths(indexBridge))} {fmt(bridgeFromValue(indexBridge))} to{' '}
+              {formatMonths(bridgeToMonths(indexBridge))} {fmt(bridgeToValue(indexBridge))}), factor{' '}
+              <strong>{fmt(bridgeFactor(indexBridge), 4)}</strong>: index{' '}
               <strong>{fmt(indexBridge.index_value_used, 4)}</strong> from a published{' '}
-              {fmt(indexBridge.index_value_published, 4)}. The result is{' '}
-              <strong>derived to show the trend to date</strong>
-              {bridgeKind(indexBridge) === 'PPI'
-                ? ' - producer prices measure what suppliers charge for the materials a construction rate is made of, which makes this the closest published proxy for the movement being estimated.'
-                : ' - consumer prices measure what households pay, not what is bought for a building, so this is the weaker proxy, used only because no producer series spans this window.'}{' '}
-              Every bridged line is <code>basis: assumed</code> and the step is shown separately in
-              the waterfall.
+              {fmt(indexBridge.index_value_published, 4)}. <strong>Derived to show the trend to
+              date</strong>, so every affected line is <code>basis: assumed</code>.
               {indexBridge.shortfall_months > 0
-                ? ' ' + bridgeSeries(indexBridge) + ' is published only to ' + indexBridge.bridged_through_month + ', so the index is derived to that month, not to the quarter end.'
+                ? ' Short of the quarter end by ' + indexBridge.shortfall_months + ' month(s).'
                 : ''}
-              {indexBridge.cpi_is_placeholder
-                ? ' The series used for the bridge is itself an indicative seed series rather than a published observation.'
-                : ''}
+              {indexBridge.cpi_is_placeholder ? ' The series itself is an indicative seed.' : ''}
             </div>
           )}
 

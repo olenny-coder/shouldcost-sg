@@ -1,4 +1,4 @@
-import React, { useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import {
   CartesianGrid, Legend, Line, LineChart, ResponsiveContainer, Tooltip, XAxis, YAxis,
 } from 'recharts';
@@ -59,6 +59,19 @@ function kindShort(kind) {
   return kind === 'PPI' ? 'PPI' : 'CPI';
 }
 
+// The section coverage list is reference material rather than a result: 11 sections, each
+// with a rate, a series list and a gap. It collapses as a whole AND per section, and the
+// choice is remembered, so a returning analyst is not made to scroll past it every time.
+const COVERAGE_STORAGE_KEY = 'shouldcost.index-dashboard.coverage-collapsed';
+
+function readCoverageCollapsed() {
+  try {
+    return window.localStorage.getItem(COVERAGE_STORAGE_KEY) === '1';
+  } catch (error) {
+    return false;
+  }
+}
+
 function BasisBadge(props) {
   // "published" means the number is a real observation from the named source.
   // "derived" means the engine computed it from published values - a bridged index,
@@ -82,6 +95,19 @@ export default function IndexDashboard(props) {
   // DISPLAY-ONLY scenario multiplier. Material prices are not part of the rate
   // formula, so this never changes should-cost - it is labelled as such.
   const [materialScenarioPct, setMaterialScenarioPct] = useState(0);
+  const [coverageOpen, setCoverageOpen] = useState(function () { return !readCoverageCollapsed(); });
+
+  useEffect(function () {
+    try {
+      window.localStorage.setItem(COVERAGE_STORAGE_KEY, coverageOpen ? '0' : '1');
+    } catch (error) {
+      /* private mode, or storage disabled - the panel still works */
+    }
+  }, [coverageOpen]);
+
+  const toggleCoverage = useCallback(function () {
+    setCoverageOpen(function (current) { return !current; });
+  }, []);
 
   const tpiData = useMemo(function () {
     const byQuarter = {};
@@ -176,6 +202,9 @@ export default function IndexDashboard(props) {
   }, [benchmarkRates]);
 
   const derivedRateCount = benchmarkRates.filter(function (r) { return !r.is_placeholder; }).length;
+  const coverageRetained = coverage
+    ? coverage.sections.filter(function (s) { return s.rate && s.rate.is_placeholder; }).length
+    : 0;
   const baseYears = Array.from(new Set(tpiRows.map(function (r) { return r.base_year; }))).sort();
   const baseYearLabel = baseYears.length ? baseYears.join('/') : 'n/a';
 
@@ -247,13 +276,24 @@ export default function IndexDashboard(props) {
         this app is invented, and no source is called at runtime.
       </div>
 
-      <h3>Section coverage - the rate, and the index that carries it to current</h3>
+      <h3>
+        Section coverage - the rate, and the index that carries it to current
+        <span className="h2-actions">
+          <button
+            type="button"
+            className="secondary small-btn"
+            onClick={toggleCoverage}
+            aria-expanded={coverageOpen}
+            aria-controls="coverage-body"
+          >
+            <span className="chev">{coverageOpen ? '\u25BC' : '\u25B6'}</span>
+            {coverageOpen ? 'Collapse' : 'Expand'}
+          </button>
+        </span>
+      </h3>
       <p className="muted small">
-        Two separate questions, answered per section in one row. <strong>Rate library</strong> is
-        what actually prices the BoQ, and states the quarter that rate is expressed at.{' '}
-        <strong>Index coverage</strong> is which published series can re-price the section. A
-        section is only escalated when a loaded series measures its cost drivers. Both columns are
-        read from the database, so they report what is actually loaded. {coverage
+        Per section: the <strong>rate</strong> that prices the BoQ and the quarter it is expressed
+        at, and the <strong>published series</strong> that can re-price it. {coverage
           ? coverage.producer_covered_sections.length + ' of ' + coverage.sections.length
             + ' sections are covered by a published producer index in ' + coverage.country_name + '.'
           : (props.coverageUnavailable
@@ -285,117 +325,129 @@ export default function IndexDashboard(props) {
           {country.code || 'SG'} on the API host configured for this site.
         </div>
       ) : null}
-      {coverage ? (
-        <div className="table-scroll">
-          <table className="data-table compact">
-            <thead>
-              <tr>
-                <th>Section</th><th>Rate library</th><th>Index coverage</th>
-                <th>Published series that re-price it</th>
-                <th>How it works</th><th>Still to wire in</th>
-              </tr>
-            </thead>
-            <tbody>
-              {coverage.sections.map(function (row) {
-                const status = COVERAGE_STATUS[row.status] || COVERAGE_STATUS.uncovered;
-                return (
-                  <tr key={row.section}>
-                    <td><span className="section-pill">{row.section}</span></td>
-                    <td className="small" style={{ maxWidth: 240 }}>
+      {coverage && !coverageOpen ? (
+        <div className="assumptions-strip">
+          <span className="badge basis-derived">
+            {coverage.producer_covered_sections.length} of {coverage.sections.length} producer-covered
+          </span>
+          <span className="badge basis-measured">
+            rates carried by {coverage.carry_index_series || 'no index'}
+          </span>
+          <span className="badge basis-assumed">{coverageRetained} retained</span>
+          <button type="button" className="linkish small" onClick={toggleCoverage}>
+            Show all {coverage.sections.length} sections
+          </button>
+        </div>
+      ) : null}
+
+      {coverage && coverageOpen ? (
+        <div id="coverage-body">
+          <ul className="coverage-list">
+            {coverage.sections.map(function (row) {
+              const status = COVERAGE_STATUS[row.status] || COVERAGE_STATUS.uncovered;
+              const series = row.producer_series.concat(row.consumer_series);
+              return (
+                <li key={row.section}>
+                  <details className="coverage-item">
+                    <summary>
+                      <span className="section-pill">{row.section}</span>
+                      <span className="coverage-headline">
+                        {row.rate
+                          ? <span><strong>{num(row.rate.base_rate, 2)}</strong>{' '}
+                              <span className="muted">per {row.rate.unit}</span></span>
+                          : <span className="muted">no library rate</span>}
+                      </span>
                       {row.rate ? (
-                        <div>
-                          <div>
-                            <strong>{num(row.rate.base_rate, 2)}</strong>{' '}
-                            <span className="muted">per {row.rate.unit}</span>
+                        row.rate.is_placeholder
+                          ? <span className="badge basis-assumed">retained</span>
+                          : <span className="badge basis-derived">derived {row.rate.base_quarter}</span>
+                      ) : null}
+                      <span className={'badge ' + status.tone}>{status.label}</span>
+                      <span className="chev" aria-hidden="true">{'\u25B8'}</span>
+                    </summary>
+                    <div className="coverage-detail">
+                      {row.rate ? (
+                        <div className="coverage-detail-block">
+                          <div className="coverage-detail-label">Rate library</div>
+                          <div className="small">
+                            {row.rate.source}
+                            <div className="muted">
+                              carried from {row.rate.carried_from} to the tender quarter by{' '}
+                              {coverage.carry_index_series || 'no index'} - confidence{' '}
+                              {row.rate.confidence}
+                            </div>
                           </div>
-                          {row.rate.is_placeholder ? (
-                            <span className="badge basis-assumed">retained estimate</span>
-                          ) : (
-                            <span className="badge basis-derived">
-                              derived to {row.rate.base_quarter}
-                            </span>
-                          )}
-                          <div className="muted small">
-                            carried from {row.rate.carried_from} by{' '}
-                            {coverage.carry_index_series || 'no index'}
-                          </div>
-                          <div className="muted small">{row.rate.source}</div>
                           {row.rate.is_placeholder ? (
                             <div className="todo small">{row.rate.replace_with}</div>
                           ) : null}
                         </div>
-                      ) : (
-                        <span className="muted">no library rate - held at the tendered rate</span>
-                      )}
-                    </td>
-                    <td>
-                      <span className={'badge ' + status.tone}>{status.label}</span>
-                      <div className="small muted" style={{ maxWidth: 220 }}>{status.help}</div>
-                    </td>
-                    <td className="small">
-                      {row.producer_series.length || row.consumer_series.length ? (
-                        <div>
-                          {row.producer_series.map(function (s) {
-                            return (
-                              <div key={s.series_name}>
-                                <span className="badge basis-measured">{kindShort(s.kind)}</span>{' '}
-                                <strong>{s.series_name}</strong>
-                                <div className="muted small">{s.title}</div>
-                              </div>
-                            );
-                          })}
-                          {row.consumer_series.map(function (s) {
-                            return (
-                              <div key={s.series_name}>
-                                <span className="badge basis-assumed">{kindShort(s.kind)}</span>{' '}
-                                <strong>{s.series_name}</strong>
-                                <div className="muted small">{s.title}</div>
-                              </div>
-                            );
-                          })}
-                        </div>
-                      ) : (
-                        <span className="muted">nothing loaded re-prices this section</span>
-                      )}
-                    </td>
-                    <td className="small" style={{ maxWidth: 320 }}>
-                      <div>{row.note}</div>
-                      {row.market_note ? (
-                        <div className="muted" style={{ marginTop: 4 }}>{row.market_note}</div>
                       ) : null}
-                    </td>
-                    <td className="small" style={{ maxWidth: 320 }}>
+
+                      <div className="coverage-detail-block">
+                        <div className="coverage-detail-label">Index coverage</div>
+                        <div className="small">{status.help}</div>
+                        {series.length ? (
+                          <ul className="coverage-series">
+                            {series.map(function (s) {
+                              return (
+                                <li key={s.series_name}>
+                                  <span className={
+                                    'badge ' + (s.kind === 'PPI' ? 'basis-measured' : 'basis-derived')
+                                  }>{kindShort(s.kind)}</span>{' '}
+                                  <strong>{s.series_name}</strong>
+                                  <span className="muted"> - {s.title}</span>
+                                </li>
+                              );
+                            })}
+                          </ul>
+                        ) : (
+                          <div className="muted small">nothing loaded re-prices this section</div>
+                        )}
+                      </div>
+
+                      {row.note ? (
+                        <div className="coverage-detail-block">
+                          <div className="coverage-detail-label">How it works</div>
+                          <div className="small">{row.note}</div>
+                          {row.market_note ? (
+                            <div className="muted small">{row.market_note}</div>
+                          ) : null}
+                        </div>
+                      ) : null}
+
                       {row.gap_sources.length ? (
-                        row.gap_sources.map(function (gap) {
-                          return (
-                            <div key={gap.name} style={{ marginBottom: 6 }}>
-                              <span className={
-                                'badge ' + (gap.status === 'wired' ? 'basis-measured' : 'basis-assumed')
-                              }>
-                                {gap.status === 'wired' ? 'wired in' : (gap.status === 'partial' ? 'partly wired' : 'documented gap')}
-                              </span>{' '}
-                              <a href={gap.url} target="_blank" rel="noreferrer">{gap.name}</a>
-                              <div className="muted small">{gap.what}</div>
-                            </div>
-                          );
-                        })
-                      ) : (
-                        <span className="muted">nothing outstanding</span>
-                      )}
-                    </td>
-                  </tr>
-                );
-              })}
-            </tbody>
-          </table>
+                        <div className="coverage-detail-block">
+                          <div className="coverage-detail-label">Still to wire in</div>
+                          <ul className="coverage-series">
+                            {row.gap_sources.map(function (gap) {
+                              return (
+                                <li key={gap.name}>
+                                  <span className={
+                                    'badge ' + (gap.status === 'wired' ? 'basis-measured' : 'basis-assumed')
+                                  }>
+                                    {gap.status === 'wired' ? 'wired in'
+                                      : (gap.status === 'partial' ? 'partly wired' : 'documented gap')}
+                                  </span>{' '}
+                                  <a href={gap.url} target="_blank" rel="noreferrer">{gap.name}</a>
+                                  <div className="muted small">{gap.what}</div>
+                                </li>
+                              );
+                            })}
+                          </ul>
+                        </div>
+                      ) : null}
+                    </div>
+                  </details>
+                </li>
+              );
+            })}
+          </ul>
+          <ul className="muted small coverage-notes">
+            {coverage.notes.map(function (note) {
+              return <li key={note}>{note}</li>;
+            })}
+          </ul>
         </div>
-      ) : null}
-      {coverage ? (
-        <ul className="muted small coverage-notes">
-          {coverage.notes.map(function (note) {
-            return <li key={note}>{note}</li>;
-          })}
-        </ul>
       ) : null}
 
       <h3>Tender / construction cost index by series (base year {baseYearLabel} = 100)</h3>

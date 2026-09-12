@@ -12,6 +12,7 @@ import AssumptionsPanel from './components/AssumptionsPanel.jsx'
 import ClassificationRules from './components/ClassificationRules.jsx'
 import ExportBar from './components/ExportBar.jsx'
 import CoveragePanel from './components/CoveragePanel.jsx'
+import Logo from './components/Logo.jsx'
 
 const SECTION_OPTIONS = [
   'Concrete', 'Reinforcement', 'Formwork', 'Masonry', 'Plaster',
@@ -491,11 +492,13 @@ export default function App() {
     <div className="app">
       <header className="app-header">
         <div>
-          <h1>shouldcost <span>| BoQ benchmarking</span></h1>
+          <div className="app-title">
+            <Logo size={38} />
+            <h1>shouldcost <span>| BoQ benchmarking</span></h1>
+          </div>
           <p>
-            Should-cost benchmarking for the Singapore and India construction markets.
-            Section classification, published cost-index adjustment, variance, waterfall and
-            sensitivity reporting - all offline, all evidence-tagged.
+            Should-cost benchmarking for the Singapore and India construction markets -
+            classification, cost-index adjustment, variance and waterfall reporting, all offline.
           </p>
         </div>
         <div className="header-status">
@@ -544,19 +547,11 @@ export default function App() {
       </div>
 
       <div className="notice notice-warn">
-        <strong>Read this before relying on a number.</strong> The published <em>index series</em>{' '}
-        are real: the monthly <strong>producer price index</strong> for India (Office of the
-        Economic Adviser), the <strong>consumer price index</strong> for both markets, the India{' '}
-        <strong>WPI</strong> quarters and the material price series all come from the named
-        statistical publication. What is <em>derived</em> is everything the engine does with them -
-        a stale index is carried forward along the published trend to show the movement to date,
-        which is a modelled step and is reported as <code>basis: assumed</code> on every line it
-        touches. The <strong>benchmark rate library</strong> and the{' '}
-        <strong>regional multipliers</strong> are indicative seed values, because the schedules of
-        rates behind them (CPWD DSR, BCA InfoNet, SISV) are licensed publications - they carry{' '}
-        <code>is_placeholder: true</code>, a <code>source_url</code> and a{' '}
-        <code># TODO: replace with actual ...</code> marker. Do not use these figures for a real
-        tender decision. The index dashboard shows which basis every row is on.
+        <strong>Demonstration build - not for a real tender decision.</strong> Index series are
+        real published data; rates derived from the BCA and CPWD schedules are labelled{' '}
+        <em>derived</em>; anything carried forward from a stale index, and any retained estimate, is
+        labelled <span className="badge basis-assumed">assumed</span>. The index dashboard shows the
+        basis of every row.
       </div>
 
       {result ? (

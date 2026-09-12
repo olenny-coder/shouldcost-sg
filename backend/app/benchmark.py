@@ -672,6 +672,24 @@ def excluded_sections(scope_exclusions: str, present_sections) -> dict[str, str]
     return hits
 
 
+def _and_list(items: list[str]) -> str:
+    """'a', 'a and b', 'a, b and c' - so a warning reads as a sentence."""
+    if not items:
+        return ""
+    if len(items) == 1:
+        return items[0]
+    return ", ".join(items[:-1]) + " and " + items[-1]
+
+
+def _month_span(months: list[str]) -> str:
+    """'2024-10' for one month, '2024-10..2024-12' for a run - short enough for a warning."""
+    if not months:
+        return "n/a"
+    if len(months) == 1:
+        return months[0]
+    return f"{months[0]}..{months[-1]}"
+
+
 # --------------------------------------------------------------------------- #
 # Benchmark rate selection
 # --------------------------------------------------------------------------- #
@@ -1111,45 +1129,31 @@ def build_benchmark(
         price_label = (
             "producer price index" if bridge.kind == "PPI" else "consumer price index"
         )
+        from_span = _month_span(bridge.from_months)
+        to_span = _month_span(bridge.to_months)
         detail = (
-            f"Index freshness: the last published {tpi.series_name} observation is "
-            f"{tpi.resolved_quarter}. To price {tpi.requested_quarter} the index was carried "
-            f"forward to {through} using the observed movement in the {bridge.series_name} "
-            f"{price_label} between {bridge.from_months[0]}"
-            f"{'-' + bridge.from_months[-1] if len(bridge.from_months) > 1 else ''} "
-            f"({bridge.from_value:.3f}) and {bridge.to_months[0]}"
-            f"{'-' + bridge.to_months[-1] if len(bridge.to_months) > 1 else ''} "
-            f"({bridge.to_value:.3f}) - a factor of {bridge.factor:.4f}. This bridge is a MODELLED "
-            f"step, not a construction cost observation"
-            + (
-                ": producer prices measure what suppliers charge for the commodity baskets a "
-                "construction rate is made of, which makes them the closest published proxy for "
-                "the movement being estimated."
-                if bridge.kind == "PPI"
-                else ": consumer prices measure what households pay, not what is bought for a "
-                "building, so this is the weaker of the two available proxies and is used only "
-                "because no producer series spans this window."
-            )
-            + " Every line it touches is basis='assumed' and flagged index_bridged, and the "
-            f"step is shown separately in the waterfall."
+            f"Index freshness: {tpi.series_name} last published {tpi.resolved_quarter}, "
+            f"{tpi.lag_quarters} quarter(s) before {tpi.requested_quarter}. Carried forward to "
+            f"{through} on the {bridge.series_name} {price_label}: {from_span} "
+            f"{bridge.from_value:.3f} -> {to_span} {bridge.to_value:.3f}, a factor of "
+            f"{bridge.factor:.4f}. A MODELLED step, not a construction cost observation, so "
+            f"every line it touches is basis='assumed' and flagged index_bridged."
         )
+        # The caveats, one short clause each rather than a sentence apiece.
+        notes = []
         if bridge.partial:
-            detail += (
-                f" Only {len(bridge.to_months)} of the 3 months in "
-                f"{quarter_of_month(bridge.covered_through_month)} had been published, so the "
-                f"bridge uses the month(s) available."
+            notes.append(
+                f"only {len(bridge.to_months)} of 3 months published in "
+                f"{quarter_of_month(bridge.covered_through_month)}"
             )
         if bridge.short:
-            detail += (
-                f" {bridge.series_name} was published only to {through}, which is "
-                f"{bridge.shortfall_months} month(s) short of the end of {tpi.requested_quarter}; "
-                f"the index is therefore derived to {through}, not to the quarter end."
+            notes.append(
+                f"{bridge.shortfall_months} month(s) short of the end of {tpi.requested_quarter}"
             )
         if bridge.is_placeholder:
-            detail += (
-                f" The {bridge.series_name} series used for the bridge is itself indicative rather "
-                f"than a published observation ({bridge.replace_with})."
-            )
+            notes.append(f"the {bridge.series_name} series is itself indicative")
+        if notes:
+            detail += " Note: " + "; ".join(notes) + "."
         warns.append(detail)
     elif tpi.fallback_used and (index_bridge or BRIDGE_AUTO).strip().lower() != BRIDGE_NONE:
         reason_text = {
@@ -1205,46 +1209,50 @@ def build_benchmark(
         )
     if bridged:
         assumes.append(
-            f"ASSUMED (modelled): the {tpi.series_name} index for {tpi.requested_quarter} is not a "
-            f"published observation. It is derived by carrying the last published observation "
-            f"({tpi.resolved_quarter} = {tpi.value_published:.4f}) forward along the observed "
-            f"movement in {bridge.series_name} ({bridge.base_year} = {bridge.base_value:.0f}) from "
-            f"{bridge.from_value:.4f} to {bridge.to_value:.4f}, giving "
-            f"{tpi.value:.4f} ({bridge.factor:+.4f} factor). Source of the bridged index: "
-            f"{bridge.source_url or 'not stated'}. The bridged index therefore shows the trend to "
-            f"date, not a tender-quarter observation, so this step is an assumption rather than "
-            f"evidence. TODO: replace with the published {tpi.series_name} observation for "
-            f"{tpi.requested_quarter} when it is released."
+            f"ASSUMED (modelled): the {tpi.series_name} index for {tpi.requested_quarter} is not "
+            f"a published observation. Carried from {tpi.resolved_quarter} = {tpi.value_published:.4f} along the "
+            f"{bridge.series_name} movement {_month_span(bridge.from_months)} "
+            f"{bridge.from_value:.4f} -> {_month_span(bridge.to_months)} {bridge.to_value:.4f} "
+            f"= {tpi.value:.4f} (x{bridge.factor:.4f}), so it shows the trend to date, not a "
+            f"tender-quarter observation. Source: {bridge.source_url or 'not stated'}. TODO: "
+            f"replace with the published {tpi.requested_quarter} observation on release."
         )
     if tpi.is_placeholder:
         warns.append(
             f"TPI series {tpi.series_name} {tpi.resolved_quarter} is an INDICATIVE SEED value "
             f"(is_placeholder = true), not a published observation. {tpi.replace_with}"
         )
-    for section, phrase in sorted(exclusion_hits.items()):
+    if exclusion_hits:
+        # ONE warning for the whole run. Emitting a paragraph per section said the same thing
+        # three times and buried the sections that were actually affected.
+        sections_hit = sorted(exclusion_hits)
+        phrases = sorted({phrase for phrase in exclusion_hits.values()})
         warns.append(
-            f"Scope exclusion: the {section} section is present in this BoQ but the "
-            f"{tpi.series_name} series excludes {phrase!r}. Scope factor 1/{ratio:.4f} was applied "
-            f"to {section}, holding those rates at base year {tpi.base_year}. This is an explicit "
-            f"modelling assumption, not a measured value."
+            f"Scope exclusion: {tpi.series_name} excludes "
+            f"{_and_list([repr(p) for p in phrases])}; "
+            f"{_and_list(sections_hit)} "
+            f"{'is' if len(sections_hit) == 1 else 'are'} present in this BoQ, so those rates are "
+            f"held at the library level (scope factor 1/{ratio:.4f}). A modelling assumption, not "
+            f"a measured value."
         )
 
-    # Base-year mismatch: the index ratio is only meaningful when the benchmark
-    # rate has been rebased to the same base year as the index.
+    # Base-year mismatch: the index ratio is only meaningful when the rate and the index share
+    # a base year. A row that states its own base quarter is exempt - the engine escalates it
+    # from that quarter, so its base_year differing from the series is the intended design and
+    # warning about it would be noise.
     mismatched_years = sorted(
         {
             row.base_year
             for row in rates.values()
-            if row.base_year != tpi.base_year
+            if row.base_year != tpi.base_year and not (row.base_quarter or "").strip()
         }
     )
     if mismatched_years:
         warns.append(
-            f"Base-year mismatch: the {registry.code} benchmark rates are stated at base year "
-            f"{', '.join(str(y) for y in mismatched_years)} but the {tpi.series_name} index is "
-            f"based on {tpi.base_year}. The index ratio is applied directly, which is only valid "
-            f"if the rate library has been rebased to {tpi.base_year}. Verify before relying on "
-            f"these figures."
+            f"Base-year mismatch: {registry.code} rate(s) at base year "
+            f"{', '.join(str(y) for y in mismatched_years)} are escalated by the {tpi.series_name} "
+            f"ratio, which is based on {tpi.base_year}. Valid only if those rates are rebased to "
+            f"{tpi.base_year}. Verify before relying on them."
         )
 
     if region.is_placeholder and region.factor != 1.0:
@@ -1259,21 +1267,17 @@ def build_benchmark(
         # the reader cannot see the denominator from any single number on the page.
         listed = ", ".join(stated_quarters)
         assumes.append(
-            f"ASSUMED: the {registry.code} benchmark rate library is expressed at {listed}, not "
-            f"at the {tpi.series_name} base year of {tpi.base_year}. Rates in a section that "
-            f"states a base quarter are escalated from THAT quarter to the tender quarter, "
-            f"which is why the ratio for those sections differs from the one on a retained "
-            f"estimate. The {tpi.series_name} index has published to {tpi.resolved_quarter}, so "
-            f"its value at {listed} is itself DERIVED by carrying that observation forward - and "
-            f"the schedules of rates were themselves cumulative-adjusted to {listed} by the "
-            f"publisher's own stated factor, not by this app."
+            f"ASSUMED: the {registry.code} rate library is expressed at {listed}, not at the "
+            f"{tpi.series_name} base year of {tpi.base_year}. Sections stating a base quarter are "
+            f"escalated from THAT quarter; retained estimates are not, which is why their ratios "
+            f"differ. The schedules of rates were cumulative-adjusted to {listed} by the "
+            f"publisher's own factor, and {tpi.series_name} has published only to "
+            f"{tpi.resolved_quarter}, so its value at {listed} is DERIVED."
         )
     assumes.append(
         f"ASSUMED: benchmark base rates are multiplied by {region.factor:.3f} for "
-        f"{region.region_name} ({region.region_code}). Source of the factor: {region.source}. "
-        f"{region.notes} This is a single blended factor, not a material/labour split: "
-        f"labour-heavy sections (Formwork, Plaster, Masonry, Preliminaries) are more regionally "
-        f"variable than material-driven ones (Concrete, Reinforcement)."
+        f"{region.region_name} ({region.region_code}). Source: {region.source}. A single "
+        f"blended factor, not a material/labour split."
     )
 
     if applied["tpi_value_override"] is not None:
@@ -1704,16 +1708,13 @@ def build_benchmark(
             f"margin_applied, and the two steps appear as their own bars in the waterfall."
         )
         assumes.append(
-            "ASSUMED: the overhead and margin percentages are a SINGLE blended pair for the whole "
-            "BoQ. They are not differentiated by trade: preliminaries-heavy and M&E sections "
-            "typically carry different overhead recovery from structural work. Split them per "
-            "section if the estimate needs that resolution."
+            "ASSUMED: overhead and margin are a SINGLE blended pair, not differentiated by trade. "
+            "Split them per section if the estimate needs that resolution."
         )
         assumes.append(
-            "ASSUMED: overheads and margin are added to the BENCHMARKED lines only. Lines carried "
-            "at the tendered rate (unclassified, unit mismatch, no library rate) are not grossed up, "
-            "because that rate already includes the contractor's own OH&P - doing so would "
-            "double-count it."
+            "ASSUMED: overheads and margin apply to BENCHMARKED lines only. Lines held at the "
+            "tendered rate are not grossed up, because that rate already carries the contractor's "
+            "own OH&P."
         )
         if overheads_in_tender:
             assumes.append(
@@ -1733,11 +1734,10 @@ def build_benchmark(
             )
     if any(l.is_benchmarked for l in lines) and abs(waterfall[2]["amount"]) + abs(waterfall[3]["amount"]) > 0:
         assumes.append(
-            f"ASSUMED: the rate gap between the tendered BoQ rate and the base-year benchmark "
-            f"rate was apportioned {int(MATERIAL_SHARE * 100)}% material / "
-            f"{int(LABOUR_SHARE * 100)}% labour. No measured rate build-up is available, so the "
-            f"material and labour waterfall bars are basis='assumed', not measured. "
-            f"TODO: replace with measured material/labour/plant splits."
+            f"ASSUMED: the tendered-to-benchmark rate gap was apportioned "
+            f"{int(MATERIAL_SHARE * 100)}% material / {int(LABOUR_SHARE * 100)}% labour - no "
+            f"measured build-up exists, so both waterfall bars are basis='assumed'. TODO: replace "
+            f"with measured material/labour/plant splits."
         )
     if exclusion_hits:
         assumes.append(
@@ -1750,11 +1750,10 @@ def build_benchmark(
         l.provenance and l.provenance.get("is_placeholder") for l in lines
     ):
         assumes.append(
-            f"ASSUMED: some benchmark rates and index values in this run are INDICATIVE for "
-            f"{registry.name} rather than published observations - they are derived to show the "
-            f"trend to date against the named source. Every affected row carries "
-            f"is_placeholder = true and a TODO naming the publication it must be replaced from. "
-            f"Do not use these figures for a real tender decision."
+            f"ASSUMED: some rates and index values in this run are INDICATIVE for {registry.name}, "
+            f"derived to show the trend to date rather than published. Each affected row carries "
+            f"is_placeholder = true and a TODO naming the publication to replace it from. Do not "
+            f"use for a real tender decision."
         )
 
     index_bridge_summary = (

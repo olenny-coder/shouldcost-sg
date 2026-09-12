@@ -61,6 +61,14 @@ body {
 }
 .app-header h1 span { opacity: 0.75; font-weight: 400; }
 .app-header p { margin: 0; max-width: 720px; color: rgba(255, 255, 255, 0.92); font-size: 13px; }
+/* The mark sits with the wordmark, on the same baseline as the h1. */
+.app-title { display: flex; align-items: center; gap: 12px; }
+.logo { flex: 0 0 auto; display: block; }
+.logo-bg { fill: rgba(255, 255, 255, 0.14); }
+.logo-baseline { stroke: rgba(255, 255, 255, 0.45); stroke-width: 1.4; stroke-dasharray: 3 3; }
+.logo-curve { stroke: #ffffff; }
+.logo-dot-start { fill: #ffffff; opacity: 0.85; }
+.logo-dot-end { fill: #ffffff; }
 .header-status {
   display: flex; flex-direction: column; gap: 5px; align-items: flex-end;
   text-align: right; font-size: 12px; color: rgba(255, 255, 255, 0.92);
@@ -316,6 +324,51 @@ button.linkish {
   margin-top: 8px; padding-top: 8px; border-top: 1px dashed #fcd34d;
 }
 .assumptions-strip .linkish { font-size: 12px; }
+
+/* --------------------------------------------------- section coverage list -- */
+/* Eleven sections, each expandable. The six-column table this replaces was unreadable
+   at this width: every cell wrapped and comparing two sections meant tracking across
+   the whole row. One line per section, detail on demand, reads top to bottom. */
+.coverage-list { list-style: none; margin: 10px 0 6px; padding: 0; }
+.coverage-item {
+  border: 1px solid var(--blue-100, #dbeafe);
+  border-radius: var(--radius-md, 10px);
+  background: #fff;
+  margin-bottom: 6px;
+  overflow: hidden;
+}
+.coverage-item[open] { border-color: var(--blue-300, #93c5fd); }
+.coverage-item > summary {
+  display: flex; flex-wrap: wrap; align-items: center; gap: 8px;
+  padding: 9px 12px; cursor: pointer; list-style: none;
+}
+.coverage-item > summary::-webkit-details-marker { display: none; }
+.coverage-item > summary:hover { background: #f8fbff; }
+.coverage-item > summary:focus-visible { outline: 2px solid var(--blue-500, #3b82f6); outline-offset: -2px; }
+.coverage-headline { min-width: 132px; }
+.coverage-item > summary .chev {
+  margin-left: auto; opacity: 0.5; display: inline-block; transition: transform 0.15s ease;
+}
+.coverage-item[open] > summary .chev { transform: rotate(90deg); }
+.coverage-detail {
+  border-top: 1px dashed var(--blue-100, #dbeafe);
+  padding: 10px 12px 12px;
+  background: #f8fbff;
+}
+.coverage-detail-block + .coverage-detail-block { margin-top: 10px; }
+.coverage-detail-label {
+  font-size: 10px; letter-spacing: 0.06em; text-transform: uppercase;
+  color: var(--blue-700, #1d4ed8); font-weight: 700; margin-bottom: 3px;
+}
+.coverage-series { list-style: none; margin: 5px 0 0; padding: 0; }
+.coverage-series li { margin-bottom: 4px; font-size: 12px; }
+.coverage-notes { margin-top: 8px; padding-left: 18px; }
+.coverage-notes li { margin-bottom: 3px; }
+
+@media (max-width: 640px) {
+  .coverage-headline { min-width: 0; }
+  .coverage-item > summary { gap: 6px; }
+}
 button.block-toggle {
   background: none; border: 0; padding: 0; cursor: pointer;
   font: inherit; font-weight: 700; color: var(--blue-700);
