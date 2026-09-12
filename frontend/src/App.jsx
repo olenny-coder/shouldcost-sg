@@ -83,6 +83,9 @@ export default function App() {
   const [indexCoverage, setIndexCoverage] = useState(null)
   // True when the API is older than this UI and has no /api/indices/coverage route.
   const [coverageUnavailable, setCoverageUnavailable] = useState(false)
+  // False while a market's reference data is in flight, so nothing is run against a
+  // half-switched state.
+  const [countryReady, setCountryReady] = useState(false)
   const [materialRows, setMaterialRows] = useState([])
   const [benchmarkRates, setBenchmarkRates] = useState([])
   const [classifierRules, setClassifierRules] = useState(null)
@@ -150,6 +153,10 @@ export default function App() {
       setSensitivity(null)
       setAdjustments(NO_ADJUSTMENTS)
       setManualRates({})
+      // Everything below is scoped to ONE market, and the previous market's values survive
+      // until this resolves. Firing a benchmark in that window sends Singapore's index to
+      // India and the API answers 400 - so the auto-run is held until the load settles.
+      setCountryReady(false)
       try {
         // The coverage matrix is an OPTIONAL panel. It was added after the rest of
         // the reference data, so a backend that predates it answers 404 - and a
@@ -206,7 +213,11 @@ export default function App() {
           if (detail.tender_quarter && quarters.indexOf(detail.tender_quarter) !== -1) {
             quarter = detail.tender_quarter
           }
-          if (detail.tpi_series_name && names.indexOf(detail.tpi_series_name) !== -1) {
+          // Only honour the uploaded run's series if it is one this market may be
+          // benchmarked against. A demonstration bill saved before the market's index was
+          // pinned to a single series - or an upload moved between markets - would otherwise
+          // open on BCA against India and fail with a 400 on the first render.
+          if (detail.tpi_series_name && selectable.indexOf(detail.tpi_series_name) !== -1) {
             series = detail.tpi_series_name
           }
           applyUploadDetail(detail)
@@ -214,8 +225,13 @@ export default function App() {
         setTpiSeries(series)
         setTenderQuarter(quarter)
         setTab('variance')
+        setCountryReady(true)
       } catch (error) {
-        if (!cancelled) setRunError(error.message)
+        if (!cancelled) {
+          setRunError(error.message)
+          // Leave it un-ready: a market whose reference data failed to load must not be
+          // silently benchmarked with the previous market's parameters.
+        }
       }
     }
     if (countryCode) loadCountry()
@@ -267,6 +283,16 @@ export default function App() {
 
   const manualKey = JSON.stringify(manualRates)
 
+  // The series actually sent to the API. A market pins its own index (BCA for Singapore,
+  // CPWD for India), so anything else in state - a stale value from the previous market, or
+  // an upload saved before that pin existed - resolves to the market's own series rather
+  // than being posted and rejected. Belt and braces with the countryReady gate above.
+  const effectiveTpiSeries = useMemo(function () {
+    const selectable = (country && country.selectable_tpi_series) || []
+    if (!selectable.length) return tpiSeries
+    return selectable.indexOf(tpiSeries) !== -1 ? tpiSeries : selectable[0]
+  }, [country, tpiSeries])
+
   const benchmarkBody = useCallback(function () {
     // Only send rates that are actually filled in; a blank input means "not set".
     const supplied = {}
@@ -282,14 +308,14 @@ export default function App() {
     })
     return {
       tender_quarter: tenderQuarter,
-      tpi_series_name: tpiSeries,
+      tpi_series_name: effectiveTpiSeries,
       variance_threshold: Number(threshold) || 0,
       region_code: regionCode || null,
       index_bridge: bridgeMode,
       adjustments: adjustments,
       manual_rates: supplied,
     }
-  }, [tenderQuarter, tpiSeries, threshold, regionCode, bridgeMode, adjustmentKey, manualKey])
+  }, [tenderQuarter, effectiveTpiSeries, threshold, regionCode, bridgeMode, adjustmentKey, manualKey])
 
   const runBenchmark = useCallback(async function () {
     if (!uploadId) return
@@ -307,21 +333,21 @@ export default function App() {
   }, [uploadId, benchmarkBody])
 
   useEffect(function () {
-    if (!uploadId) return undefined
+    if (!uploadId || !countryReady) return undefined
     const handle = setTimeout(function () { runBenchmark() }, 300)
     return function () { clearTimeout(handle) }
-  }, [uploadId, benchmarkBody, runBenchmark])
+  }, [uploadId, countryReady, benchmarkBody, runBenchmark])
 
   const benchmarkPayload = useMemo(function () {
     return {
       tender_quarter: tenderQuarter,
-      tpi_series_name: tpiSeries,
+      tpi_series_name: effectiveTpiSeries,
       variance_threshold: Number(threshold) || 0,
       region_code: regionCode || null,
       index_bridge: bridgeMode,
       adjustments: adjustments,
     }
-  }, [tenderQuarter, tpiSeries, threshold, regionCode, bridgeMode, adjustmentKey])
+  }, [tenderQuarter, effectiveTpiSeries, threshold, regionCode, bridgeMode, adjustmentKey])
 
   // ------------------------------------------------------------ sensitivity --
   async function runSensitivity(overrides) {
