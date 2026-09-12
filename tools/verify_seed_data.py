@@ -542,6 +542,95 @@ def check_sor_rates() -> None:
     )
 
 
+def check_sor_catalogue() -> None:
+    """Re-derive the upload template's item catalogue from the two extracts.
+
+    The template IS the schedule for its market, and the upload's sections summary is
+    built from this catalogue, so three things have to hold or the summary is fiction:
+
+    * every description in the extract is in the catalogue - an earlier revision silently
+      dropped 60 Singapore items (no published rate) and 30 India items (an odd unit);
+    * every rate is the extract's own escalated rate, converted by the documented unit
+      multiplier, so the conversion is auditable rather than assumed;
+    * every description still classifies to the section stored against it, so the template
+      cannot advertise a section the app no longer produces.
+    """
+    if not SOR_SG.exists() or not SOR_IN.exists():
+        print(f"[SKIP] Upload template catalogue: {SOR_DIR} not found")
+        return
+
+    sys.path.insert(0, str(REPO / "backend"))
+    sys.path.insert(0, str(REPO / "tools"))
+    from app.boq_template import catalogue_rows
+    from app.classifier import UNCLASSIFIED, classify
+    from build_sor_items import FILES, UNIT_CONVERSION, load
+
+    mismatches: list[str] = []
+    checked = 0
+    for country, (filename, currency, source, code_of, est_of) in FILES.items():
+        extract = load(filename)
+        wanted = [row for row in extract if (row["Description"] or "").strip()]
+        items = list(catalogue_rows(country))
+
+        if len(items) != len(wanted):
+            mismatches.append(
+                f"{country}: catalogue has {len(items)} items but the extract has "
+                f"{len(wanted)} descriptions - every description must be listed"
+            )
+        by_code = {item.code: item for item in items}
+        for row in wanted:
+            code = code_of(row).strip()
+            item = by_code.get(code)
+            if item is None:
+                mismatches.append(f"{country} {code}: in the extract but not in the catalogue")
+                continue
+            checked += 1
+            if item.description != (row["Description"] or "").strip():
+                mismatches.append(f"{country} {code}: description differs from the extract")
+            published_unit = (row["Unit"] or "").strip()
+            conversion = UNIT_CONVERSION.get(published_unit.lower())
+            if conversion is None:
+                if item.unit != published_unit or item.unit_comparable:
+                    mismatches.append(
+                        f"{country} {code}: unit {published_unit!r} is not convertible, so it must "
+                        f"be carried verbatim and flagged"
+                    )
+                continue
+            unit, multiplier = conversion
+            if item.unit != unit:
+                mismatches.append(f"{country} {code}: unit {item.unit!r} != converted {unit!r}")
+            try:
+                raw = float(est_of(row))
+            except (TypeError, ValueError):
+                raw = 0.0
+            expected = raw * multiplier if raw > 0 else None
+            if expected is None:
+                if item.rate is not None:
+                    mismatches.append(f"{country} {code}: extract has no rate but the catalogue does")
+            elif item.rate is None or abs(item.rate - expected) > 0.05:
+                mismatches.append(
+                    f"{country} {code}: rate {item.rate} != extract rate x {multiplier} "
+                    f"({expected:.2f})"
+                )
+            section = classify(item.description, country).smm2_section
+            current = "" if section == UNCLASSIFIED else section
+            if current != item.section:
+                mismatches.append(
+                    f"{country} {code}: stored section {item.section!r} but the classifier now says "
+                    f"{current!r} - re-run tools/build_sor_items.py"
+                )
+
+        inside = sum(1 for item in items if item.section)
+        print(
+            f"         {country}: {len(items)} items, {inside} in the ten sections, "
+            f"{len(items) - inside} outside, "
+            f"{sum(1 for item in items if item.rate is None)} with no published rate, "
+            f"{sum(1 for item in items if not item.unit_comparable)} with an odd unit"
+        )
+
+    report("Upload template catalogue (BCA SOR + CPWD DSR descriptions)", checked, mismatches)
+
+
 def main() -> int:
     print(f"Verifying seeded reference data against {REALDATA}\n")
     check_cpi()
@@ -550,6 +639,7 @@ def main() -> int:
     check_wpi()
     check_ppi()
     check_sor_rates()
+    check_sor_catalogue()
     print(f"\n{checks} published value(s) checked; {len(problems)} problem(s).")
     if problems:
         print("The seed data has drifted from its source. Refresh it before trusting the app.")

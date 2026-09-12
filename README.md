@@ -86,7 +86,7 @@ git clone <your-repo> shouldcost-sg && cd shouldcost-sg
 
 make install     # pip install -r backend/requirements.txt  +  npm install in frontend/
 make seed        # python -m app.etl   (idempotent - safe to run repeatedly)
-make test        # pytest, 253 tests
+make test        # pytest, 356 tests
 
 # optional, if you have refreshed the publisher downloads in ../.realdata/:
 python tools/verify_seed_data.py   # re-derives every seeded value from its source
@@ -686,14 +686,19 @@ expected to agree. That spread is the report.
 Both sample BoQs are engineered so variance reporting is visibly exercised. Against the default
 view for each market:
 
-| | Singapore (BCA 2024Q4) | India (CPWD 2024Q4) |
+| | Singapore (BCA 2024Q4) | India (WPI-CONST 2024Q4, Delhi) |
 |---|---|---|
-| Lines | 20 | 20 |
-| Over +15% | 5 | 6 |
+| Lines | 25 | 22 |
+| Over +15% | 4 | 6 |
 | Under -15% | 3 | 4 |
 | Unclassified | 2 | 2 |
 | Unit mismatch | 1 | 1 |
-| Total variance | +1.66% | +3.70% |
+| Not benchmarked | 3 | 3 |
+| Total variance | +3.55% | +2.44% |
+
+The bills are built from real schedule lines (see "The demonstration bills are real schedule lines"),
+so those figures move whenever the schedule extracts or the rate library are refreshed. They are the
+current numbers, measured through the API rather than remembered.
 
 Both contain Piling, so the scope-exclusion path fires in both markets.
 
@@ -711,8 +716,8 @@ connection the backend opens at runtime is to its own database.
 |---|---|---|
 | `GET` | `/api/countries` | the market registry: currency, measurement standard, credible sources |
 | `GET` | `/api/boq` | recent uploads, newest first. Query: `country`, `limit` |
-| `POST` | `/api/boq/upload` | multipart CSV/XLSX -> parse, classify, persist. Query: `country`, `currency` |
-| `GET` | `/api/boq/template` | **downloadable BoQ template - the whole schedule of rates for the market.** Query: `format=csv\|xlsx`, `country`. 393 BCA lines for Singapore, 1,846 CPWD DSR lines for India |
+| `POST` | `/api/boq/upload` | multipart CSV/XLSX -> parse, classify, persist. Query: `country`, `currency`. The response carries `sections_summary[]` (per section: lines, from the template, schedule wording, schedule items available, whether the library prices it) and `sor_catalogue` |
+| `GET` | `/api/boq/template` | **the BoQ template: the market's whole schedule of rates plus its instructions sheet.** Query: `format` (`xlsx`, the default, or `csv` for the item list alone), `country`. 454 BCA SOR lines for Singapore, 1,876 CPWD DSR lines for India |
 | `GET` | `/api/boq/{upload_id}` | parsed items for an upload |
 | `PATCH` | `/api/boq/item/{item_id}` | manual reclassification; sets `classified_by = "manual"` |
 | `POST` | `/api/boq/{upload_id}/benchmark` | body `{tender_quarter, tpi_series_name, variance_threshold, region_code, index_bridge, adjustments, manual_rates}`. `index_bridge` is `cpi` (default) or `none` |
@@ -807,8 +812,15 @@ Two families, both streamed from the backend:
 
 ### The upload template is the schedule of rates
 
-`backend/data/sor_items.csv` (built by `tools/build_sor_items.py`) is the committed catalogue of
-every item in both schedules, and `GET /api/boq/template` serves it as a fillable bill:
+There is **one template per market**, and its instructions travel inside it:
+`GET /api/boq/template` (default `format=xlsx`) returns a workbook with a `BoQ` sheet and an
+`Instructions` sheet. A 450-1,900 row sheet is unusable without an explanation of its columns, which
+rows the library can price, and where the pre-filled rates came from, so the instructions are not a
+separate download. (`format=csv` still returns the same item list without the instructions sheet, for
+scripting.)
+
+`backend/data/sor_items.csv` (built by `tools/build_sor_items.py` from the two published extracts) is
+the committed catalogue of every item in both schedules:
 
 | column | what it is |
 |---|---|
@@ -817,13 +829,32 @@ every item in both schedules, and `GET /api/boq/template` serves it as a fillabl
 | `section` | the app's classification, **supplied so you can filter**. Blank = a trade outside the library's ten sections |
 | `unit` | the schedule unit converted to the app's vocabulary (`sqm`->`m2`, `kg`->`t`) |
 | `quantity` | **zero**. A schedule of rates has no quantities; an untouched template therefore totals zero on purpose |
-| `rate` | the schedule's own 2026 rate, so a filled quantity analyses straight away. Every row says it is the schedule rate, not a tendered one |
+| `rate` | the schedule's rate escalated to 2026 by CPI, so a filled quantity analyses straight away. Every row says it is a schedule rate, not a tendered one |
 
-Of Singapore's 393 items, **170 fall in a section the library covers** and 223 do not; for India it
-is **1,155 of 1,846**. The `section` column is what makes a 1,846-row sheet navigable: filter on it
-and you have the lines the app can benchmark. The rest are trades the library has no section for -
-glazing, painting, metalwork, roofing, finishes - and they are reported as needing a manual rate
-rather than being silently dropped.
+**Every description the extracts carry is listed** - 454 for Singapore and 1,876 for India, 2,330 in
+total. An earlier revision dropped the rows it could not price, which silently removed 60 Singapore
+items (no published rate) and 30 India items (a unit the app cannot compare) from a list whose whole
+purpose is completeness. Those rows are now kept and flagged per row instead: a missing rate writes a
+zero with its own TODO, and an unconvertible unit is carried verbatim - `litre`, `hour`, "per metre
+span" - so the analyst can see what the schedule said and re-measure. Only a row with no description
+at all is dropped, and the count is printed.
+
+Of Singapore's 454 items, **169 fall in a section the library covers** and 285 do not; for India it is
+**1,042 of 1,876**. The `section` column is what makes a 1,876-row sheet navigable: filter on it and
+you have the lines the app can benchmark. The rest are trades the library has no section for -
+glazing, painting, metalwork, roofing, joinery, finishes, demolition, repairs - and they are reported
+as needing a manual rate rather than being silently dropped.
+
+**Where the pre-filled rates come from**, stated on the instructions sheet as well:
+
+| market | source | escalation |
+|---|---|---|
+| Singapore | BCA Schedule of Rates, May 2022 | x 1.171 (cumulative CPI 2022 to 2026) |
+| India | CPWD Delhi Schedule of Rates 2021 Vol-II | x 1.2364 (cumulative CPI 2021 to 2026) |
+
+Both extracts carry the same caveat - *validate with current market quotations* - and the template
+repeats it. The escalation is the same technique the app uses to carry a stale index to the tender
+quarter, disclosed for the same reason.
 
 A file that mixes coded and uncoded lines gets a warning naming how many are not in the schedule,
 because those are the lines that need input before the should-cost is complete. A file with no
@@ -832,10 +863,29 @@ because those are the lines that need input before the should-cost is complete. 
 The two bundled demonstration bills carry their schedule codes too, so a demo line traces back to the
 BCA or DSR item it was quoted from.
 
-* **BoQ template** - a ready-to-fill CSV or XLSX in the vocabulary of the selected market. The XLSX
-  carries a second `Instructions` sheet listing the columns, the accepted unit spellings, and the
-  credible sources for that market. Round-trip tested: every template example uploads and classifies
-  cleanly (`test_template_csv_downloads_and_round_trips`).
+### The sections summary factors the schedule in
+
+Uploading a bill reports a per-section summary, and it is built from the schedule of rates rather than
+from the section counts alone:
+
+| field | meaning |
+|---|---|
+| `lines` | how much of the bill sits in this section |
+| `from_sor_template` | lines carrying a schedule code, i.e. taken from the template |
+| `matched_sor_description` | lines that **are** a schedule item's own wording, whether or not the code column survived the edit |
+| `sor_items_available` | how many schedule items this market holds for the section - the ceiling on coverage |
+| `sor_items_bookable` | of those, how many are in a unit the app can compare |
+| `benchmark_rate_available` | whether the rate library can price the section at all |
+
+A description that matches a schedule item exactly takes **that item's section**, before the keyword
+rules run, so a bill built from the template always lands in the section the template advertised. The
+same summary comes back when an upload is reopened, and the variance table's section headers repeat
+the fact per section (`12 line(s) · 9 from the schedule of rates`), with each line flagged
+`schedule item <code>`.
+
+* **BoQ template** - one XLSX per market, instructions built in. Round-trip tested: the template
+  uploads and every line keeps its schedule section (`test_template_csv_downloads_and_round_trips`,
+  `test_sor_template.py`).
 * **Benchmark export** at four levels: `items`, `sections`, `waterfall`, `summary`. The UI posts the
   full benchmark body, so a download always matches the screen - **including** any active index
   adjusters and the assumptions that go with them.
@@ -906,10 +956,10 @@ Case-insensitive keyword match on `raw_description`, first matching rule wins, i
 concrete|grade \d+                     -> Concrete
 rebar|reinforcement|steel bar          -> Reinforcement
 formwork|shutter                       -> Formwork
-brick|blockwork|masonry                -> Masonry
+brick|blockwork|blocks|masonry         -> Masonry
 plaster|render|screed                  -> Plaster
-excavate|excavation|dig                -> Excavation
-pile|piling|bored                      -> Piling
+excavate|excavation|\bdig              -> Excavation
+\bpile|\bpiling|\bbored                -> Piling
 waterproof|membrane                    -> Waterproofing
 conduit|containment|trunking           -> M&E Containment
 preliminar|site setup|insurance        -> Preliminaries
@@ -919,10 +969,51 @@ Anything unmatched becomes **`Unclassified`**. Unclassified lines are surfaced i
 table with an inline dropdown that issues `PATCH /api/boq/item/{item_id}` and re-runs the benchmark
 immediately. Nothing is silently bucketed.
 
+A description that **is** a schedule item takes that item's section before the rules run (see "The
+sections summary factors the schedule in"), so the template's own vocabulary is authoritative for the
+template's own lines.
+
+### Guards: the work measured is not always the section it mentions
+
+A trade rule can fire on a keyword that names the *substrate*, the *subject* or the *thing being
+removed* rather than the work. Every section therefore carries a guard, and a rule whose guard
+matches stands down while the search continues down the table:
+
+| one guard, shared by every section | because the work measured is |
+|---|---|
+| `painting`, `paint`, `polish`, `varnish` | decorating |
+| `demolishing`, `demolition`, `dismantling`, `chipping`, `raking out`, `grinding` | stripping out |
+| `repair`, `repairs`, `rehabilitation` | remedial |
+
+plus two section-specific ones: **Concrete** stands down when the line names pipework, cable, a
+sanitary fitting, formwork or masonry, and **Masonry** stands down when the work is plastering or
+screeding on the masonry.
+
+The schedule catalogue is what exposed how much this mattered - 284 items were priced under the wrong
+section, and each family was verified by listing every move:
+
+| was classified as | is now | example | items |
+|---|---|---|---|
+| M&E Containment | outside the ten | `Painting on rain water, soil waste and vent pipes ... bitumastic paint` | 90 |
+| Concrete | outside the ten | `Finishing with Epoxy paint (On concrete work)`, `Demolishing lime concrete` | 27 |
+| Concrete | M&E Containment | `Providing and fixing ... Stainless Steel Fitting of press fit design of grade 316L` | 114 |
+| Concrete | Masonry | `Hollow concrete block laid in cement mortar (1:4)` | 17 |
+| Masonry | Plaster | `15 mm cement plaster on the rough side of single or half brick wall` | 12 |
+| Masonry / Plaster / Formwork / Waterproofing | outside the ten | `Demolishing brick work`, `Dismantling old plaster`, `Repairs to plaster` | 20 |
+| Concrete | Plaster | `Plastering in cement and sand (1:4) mortar` | 6 |
+| Piling | outside the ten | `Demolishing R.C.C. work ... and stockpiling at designated locations` | 1 |
+
+Two of those are worth naming as bugs rather than judgement calls. The 114 stainless-steel fittings
+matched because the Concrete rule reads `grade \d+` and the description says **grade 316L** - a steel
+grade, not a concrete one. And the demolition item matched because `piling` is a substring of
+**stockpiling**, which is why the Piling rule is now word-bounded. The app has no Painting,
+Demolition or Repair section, so those rows fall outside the ten and are reported as needing a manual
+rate - which is the honest outcome: a rate library with no Painting item cannot price painting.
+
 **Known consequence of first-match-wins:** `"Waterproof membrane to pile cap tops"` classifies as
-**Piling**, because the Piling rule precedes the Waterproofing rule. This is asserted in
-`test_first_match_wins_is_documented_caveat` so that changing the order is a deliberate act, and it
-is exactly why manual reclassification exists.
+**Piling**, because the Piling rule precedes the Waterproofing rule and the guard does not stand it
+down. This is asserted in `test_first_match_wins_is_documented_caveat` so that changing the order is a
+deliberate act, and it is exactly why manual reclassification exists.
 
 ---
 
@@ -1052,7 +1143,7 @@ Vercel requires a redeploy**.
 ## Testing
 
 ```
-cd backend && python -m pytest tests -v      # 253 tests
+cd backend && python -m pytest tests -v      # 356 tests
 
 # The same suite passes against real PostgreSQL - the engine production runs:
 docker compose up -d --build
@@ -1079,6 +1170,7 @@ available.
 | `tests/test_manual_rates.py` | 20 | coverage gap is real and closes to 100%, manual rates are tagged assumed and never from the library, indexed vs stated-at-tender behaviour, region applies only to indexed rates, scope exclusions still win, unusable rates ignored, reconciliation holds, sensitivity carries them, and the report counts them |
 | `tests/test_overheads_margin.py` | 16 | overheads and margin off by default changing nothing, the compounded arithmetic (`1.12 x 1.06`, not `1.18`), totals adding benchmark + overheads + margin, the waterfall closing on the full total, section aggregates carrying the full cost, assumed basis plus flags plus the stated compounding, one-percentage-only runs, the full-to-full default comparison and the net-of-OHP alternative, unbenchmarked lines NOT being grossed up, sensitivity and export coverage, validation limits, and the full cost stacking correctly with a region and a CPI bridge on an India run |
 | `tests/test_cpi_bridge.py` | 32 | **the CPI seeds are real published data** with spot checks against SingStat table M213751 and the MoSPI API, the bridge arithmetic, the months used and the partial-quarter case, **the bridge never running past the latest published CPI month**, bridged lines being assumed and flagged, the bridge as its own waterfall step, market-risk + bridge equalling the unbridged market risk, **a bridged run reconciling as tightly as an observed one**, the off switch, the no-CPI-market degradation, the unknown-preferred-series fallback, **India's published back-cast spanning the rebase, and the older base being used only when the current one cannot span**, override precedence, scope cancellation under a bridge, sensitivity baseline equality, the report and summary exports, and the new endpoints |
+| `tests/test_sor_template.py` | 19 | **the template lists every schedule item** (454 / 1,876, unique codes, no description dropped), rows with no published rate and odd units are kept and flagged, **every catalogue description still classifies to its stored section** (the drift tripwire behind the sections summary), the sections summary accounts for every item, exact-normalised description matching, one XLSX with instructions stating the source and escalation of the pre-filled rates plus the sections summary, the CSV variant being the item list alone, an upload from the template keeping each line's schedule section, the sections summary separating hand-written lines from schedule lines, reopening an upload keeping its summary, benchmark lines carrying their schedule code, and the classifier guards against the mis-fires the catalogue exposed |
 
 Tests run against a throwaway SQLite file created in a temp directory by `tests/conftest.py`, which
 sets `DATABASE_URL` **before** importing any application module. The developer database is never
@@ -1100,8 +1192,8 @@ by inspecting screenshots. Against the seeded samples:
 DESKTOP - Singapore, auto-loaded on boot
   header status      : API ok | db connected | development | Singapore | SGD
   market bar         : SMM2 - Metric SI. Rates are per m, m2, m3, tonne or lump sum.
-  KPI tiles          : BoQ S$2,414,861.00 | should-cost S$2,375,328.64 | variance +S$39,532.36 (+1.66%)
-                       8 of 20 breaching | 3 not benchmarked (S$98,460.00)
+  KPI tiles          : BoQ S$3,043,410.50 | should-cost S$2,938,980.85 | variance +S$104,429.65 (+3.55%)
+                       7 of 25 breaching | 3 not benchmarked (S$34,839.00)
                        index currency 2024Q4 - published observation covers the quarter
   variance table     : 41 rows, 11 section subtotals
   waterfall          : 3 recharts surfaces
@@ -1109,7 +1201,7 @@ DESKTOP - Singapore, auto-loaded on boot
                        most sensitive section Concrete (swing S$73,469.76), 9 sweep points
   index adjuster     : variance -S$195,980.68 (-7.51%) after moving the index +12%
                        assumptions 4 -> 5, adjusted lines flagged basis=assumed
-  template download  : "Downloaded shouldcost-boq-template-sg.csv"
+  template download  : "Downloaded shouldcost-boq-template-sg.xlsx" (one button, instructions inside)
 
 DESKTOP - the same BoQ priced at 2026Q3, a quarter no construction index has published
                        (Singapore has no usable producer index, so this market falls back to CPI)
@@ -1127,7 +1219,7 @@ DESKTOP - the same BoQ priced at 2026Q3, a quarter no construction index has pub
                        derived to show the trend to date ... basis: assumed"
   waterfall          : reconciled; chips BoQ measured | Material assumed | Labour assumed |
                        Market risk derived | CPI bridge assumed | Scope derived | Unexplained derived
-                       bridge row: S$55,154.79, basis assumed, method "sum(quantity x base_rate x
+                       bridge row: S$19,029.75, basis assumed, method "sum(quantity x base_rate x
                        (index_ratio_used - published_tpi_ratio))"
   index dashboard    : "Data currency and the index bridge" table (4 series: last published, lag,
                        carried forward with, factor, index used), section-coverage table (11 rows,
@@ -1142,32 +1234,32 @@ DESKTOP - the same BoQ priced at 2026Q3, a quarter no construction index has pub
                        IT"; remembered across a reload
 
 DESKTOP - overheads 12% and margin 6% set on the adjusters panel
-  adjuster readout   : "Full should-cost: $2,375,328.64 benchmark cost grossed up by 12.0% overheads
-                       and then 6.0% margin = $2,801,558.46 (the engine's own figure: benchmarked
+  adjuster readout   : "Full should-cost: $2,938,980.85 benchmark cost grossed up by 12.0% overheads
+                       and then 6.0% margin = $3,482,636.24 (the engine's own figure: benchmarked
                        lines only...)"
-  KPI tiles          : should-cost $2,375,328.64 labelled "(benchmark cost) ... before overheads and
-                       margin" | FULL SHOULD-COST (INCL. OH&P) $2,801,558.46
-                       "+$273,224.24 overheads (12.0%) + $153,005.56 margin (6.0%) | compared
-                       full-to-full" | VARIANCE -$386,697.46 (-13.80%) | 34 line flags
-  variance footer    : "Full should-cost - benchmark $2,375,328.64 + $273,224.24 overheads (12.0%)
-                       + $153,005.56 margin (6.0%) | OH&P | -13.80% | -$386,697.46 | $2,801,558.46"
-  line detail        : "Full cost: overheads 12.0% and margin 6.0%. Benchmark rate $201.84 becomes
-                       $239.62 per m3 (margin compounded on overheads)... The variance above is
+  KPI tiles          : should-cost $2,938,980.85 labelled "(benchmark cost) ... before overheads and
+                       margin" | FULL SHOULD-COST (INCL. OH&P) $3,482,636.24
+                       "+$348,497.03 overheads (12.0%) + $195,158.34 margin (6.0%) | compared
+                       full-to-full" | VARIANCE -$439,225.74 (-12.61%)
+  variance footer    : "Full should-cost - benchmark $2,938,980.85 + $348,497.03 overheads (12.0%)
+                       + $195,158.34 margin (6.0%) | OH&P | -12.61% | -$439,225.74 | $3,482,636.24"
+  line detail        : "Full cost: overheads 12.0% and margin 6.0%. Benchmark rate $... becomes
+                       $... per m3 (margin compounded on overheads)... The variance above is
                        measured full-to-full against that rate."
   waterfall          : "Reconciled: BoQ total + adjustments = full should-cost total, within 0.01 SGD"
                        chips BoQ measured | Material assumed | Labour assumed | Market risk derived |
                        CPI bridge assumed | Scope derived | Overheads assumed | Margin assumed |
                        Unexplained derived | Full should-cost assumed
-                       Overheads row $273,224.24, Margin row $153,005.56, closing row
-                       "Full should-cost total $2,801,558.46" basis ASSUMED
-  untick "include OH&P": variance tile reverts to +$39,532.36 (+1.66%) and the full tile reads
+                       Overheads row $348,497.03, Margin row $195,158.34, closing row
+                       "Full should-cost total $3,482,636.24" basis ASSUMED
+  untick "include OH&P": variance tile reverts to +$104,429.65 (+3.55%) and the full tile reads
                        "variance excludes OH&P" - the full cost is unchanged
 
 DESKTOP - switched to India, at the quarter the samples were calibrated for (2024Q4)
   market bar         : IS 1200 / CPWD DSR - rates in Indian Rupees
-  KPI tiles          : BoQ INR 4,00,45,550.00 | should-cost INR 3,86,16,628.75
-                       variance +INR 14,28,921.25 (+3.70%) | 10 of 20 breaching
-  index dashboard    : 7 recharts surfaces, 20 rate-library rows
+  KPI tiles          : BoQ INR 6,25,30,109.50 | should-cost INR 6,10,40,204.12
+                       variance +INR 14,89,905.38 (+2.44%) | 10 of 22 breaching
+  index dashboard    : 20 rate-library rows
 
 DESKTOP - switched to India, priced at 2026Q3 (a quarter the WPI has not published)
   market bar         : IS 1200 / CPWD DSR - rates in Indian Rupees
@@ -1176,7 +1268,8 @@ DESKTOP - switched to India, priced at 2026Q3 (a quarter the WPI has not publish
                         It was carried forward to 2026-07 along the published trend of PPI-ALL
                         (producer price index, 2026-04-2026-06 109.533 -> 2026-07 109.900), a factor
                         of 1.0033: index 92.60 becomes 92.91. DERIVED - BASIS ASSUMED"
-  KPI tiles          : BoQ INR 3,22,46,130.00 | should-cost INR 3,28,09,022.51
+  KPI tiles          : BoQ INR 6,25,30,109.50 | should-cost INR 6,38,62,135.47
+                       variance -INR 13,32,025.97 (-2.09%) | 11 of 22 breaching
                        index currency 2026Q2 - carried forward to 2026-07 with PPI-ALL (x1.0033)
   index dashboard    : "Data currency and the index bridge" table plus a section-coverage table
                        (11 rows, 10 of them "producer index"), a 16-basket producer table with the
@@ -1189,6 +1282,26 @@ DESKTOP - switched to India before the CPI was loaded (the degradation path)
   index tile         : held at the last published observation, 1 quarter(s) stale
   index dashboard    : "No consumer price series is loaded for this market, so a stale index cannot
                        be bridged... Import one with python -m app.importer --kind cpi."
+
+DESKTOP - the upload view: one template, and a sections summary that names the schedule
+  template buttons   : ["Download the Singapore BoQ template (.xlsx, 2 sheets: the schedule of
+                        rates + instructions)"] - exactly one, previously two (.csv and .xlsx)
+  click result       : "Downloaded shouldcost-boq-template-sg.xlsx"
+  template via API   : csv 553,287 bytes | default download is the XLSX media type
+  upload from it     : 14 lines, 0 unclassified, 14 carrying a schedule code
+  sections summary   : heading + intro "The Singapore schedule of rates holds 454 items; 169 fall in
+                        a section the rate library prices and 285 are outside the ten sections
+                        (painting, glazing, metalwork, roofing, joinery, finishes, demolition,
+                        repairs) and need a manual rate. This table shows how your lines map onto it.
+                        Schedule: BCA Schedule of Rates, May 2022, escalated to 2026 by CPI."
+                       columns SECTION | LINES | FROM TEMPLATE | SCHEDULE WORDING | SCHEDULE ITEMS |
+                        RATE LIBRARY
+                       rows e.g. "Excavation 4 3 4 16 PRICED", "Unclassified 2 0 2 0 MANUAL RATE
+                        NEEDED", "M&E Containment 1 0 0 7 PRICED"
+  variance table     : section headers carry the same fact per section -
+                       "Concrete 2 line(s) · 2 from the schedule of rates",
+                       "Excavation 4 line(s) · 3 from the schedule of rates · 1 not benchmarked";
+                       lines flagged "schedule item III"
 
 MOBILE 390px   : page overflow 0px, tabs scrollable, tables contained, tiles single column
 MOBILE 360px   : page overflow 0px
@@ -1250,7 +1363,7 @@ was not re-run for the CPI bridge - see Testing):
 ```
 postgresql dialect, ENVIRONMENT=production, CORS = ['http://localhost:4173'], no wildcard
 ETL on Postgres      : 126 tpi_series, 180 material_prices, 20 benchmark_rates, 13 regional_factors
-India benchmark      : boq 32,246,130 | should-cost 34,846,719.65 | variance -7.46% | reconcile 0.0
+India benchmark      : boq 62,530,110 | should-cost 66,999,123 | variance -6.67% (Mumbai) | reconcile 0.0
 full test suite      : 205 passed on PostgreSQL 16  (and 253 passed on SQLite for this build)
 legacy postgres://   : normalised and connected
 ```
@@ -1355,6 +1468,27 @@ Each of these is a deliberate choice, not an oversight.
     reported. Either way the full cost is identical - only what it is compared against moves, which is
     exactly why the two figures are reported separately (`should_cost_total` and
     `full_should_cost_total`).
+25. **One template, with its instructions inside it.** The upload view offers a single download: the
+    XLSX whose second sheet explains the columns, the rate provenance and the sections summary. The
+    CSV variant still exists on the API as the item list alone, because scripting a 1,876-row sheet
+    through a browser button is not a workflow anybody wants; it is not offered in the UI, where two
+    template buttons were just a choice between the same file with and without its instructions.
+26. **Every schedule description is listed, including the ones the app cannot price in one go.**
+    Missing rates become a zero with their own TODO, and a unit the app cannot compare (`litre`,
+    `hour`, "per metre span") is carried verbatim and flagged so the row is reported as a unit
+    mismatch rather than dropped. Dropping them made the template shorter than the schedule it claims
+    to be - 60 Singapore and 30 India items - which is exactly the kind of quiet omission this app
+    exists to avoid.
+27. **A line whose description IS a schedule item is classified from the schedule, not by keyword.**
+    The catalogue's section for that description is authoritative, so a bill built from the template
+    always lands where the template said it would. Free text still goes through the keyword rules, and
+    a schedule code supplied by the file is kept only when the description is not a schedule item -
+    which is what keeps "not in the schedule" reportable.
+28. **The catalogue is checked against the classifier on every verification run.** The sections summary
+    is only as good as the agreement between the two, so `tools/verify_seed_data.py` re-classifies all
+    2,330 catalogue descriptions and fails if any no longer lands in its stored section, naming the
+    fix (`python tools/build_sor_items.py`). A rule change that silently invalidated the template's
+    `section` column would otherwise be invisible.
 
 ---
 

@@ -167,6 +167,23 @@ class BoQItemOut(ORMModel):
     replace_with: str = ""
 
 
+class SectionSummaryOut(BaseModel):
+    """One row of the upload's sections summary, with the schedule of rates factored in.
+
+    This is what tells an analyst how much of the bill the market's schedule and rate
+    library actually cover, per section - and therefore where the gaps are before anyone
+    reads a variance figure.
+    """
+
+    smm2_section: str
+    lines: int
+    from_sor_template: int = 0
+    matched_sor_description: int = 0
+    sor_items_available: int = 0
+    sor_items_bookable: int = 0
+    benchmark_rate_available: bool = False
+
+
 class UploadOut(ORMModel):
     upload_id: int
     country: str
@@ -179,6 +196,11 @@ class UploadOut(ORMModel):
     unclassified_count: int
     items: list[BoQItemOut]
     counts_by_section: dict[str, int]
+    # Per-section breakdown that factors in the schedule of rates for this market.
+    sections_summary: list[SectionSummaryOut] = Field(default_factory=list)
+    # What the market's schedule holds overall: item count, how many the library can price,
+    # and how many fall outside the ten sections altogether.
+    sor_catalogue: dict = Field(default_factory=dict)
     warnings: list[str] = Field(default_factory=list)
     assumptions: list[str] = Field(default_factory=list)
 
@@ -194,6 +216,8 @@ class UploadDetailOut(BaseModel):
     currency: str
     items: list[BoQItemOut]
     counts_by_section: dict[str, int]
+    sections_summary: list[SectionSummaryOut] = Field(default_factory=list)
+    sor_catalogue: dict = Field(default_factory=dict)
 
 
 class UploadSummaryOut(BaseModel):
@@ -343,6 +367,8 @@ class BenchmarkLine(ORMModel):
     boq_amount: float
     smm2_section: str
     classified_by: Literal["auto", "manual"]
+    # Schedule-of-rates code, when the line came from the template; blank otherwise.
+    sor_code: str = ""
 
     is_benchmarked: bool
     exclusion_reason: str | None = None

@@ -17,7 +17,13 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from .. import boq_template, classifier, schemas
-from ..benchmark import RegionLookupError, TPILookupError, build_benchmark, resolve_region
+from ..benchmark import (
+    RegionLookupError,
+    TPILookupError,
+    build_benchmark,
+    load_benchmark_rates,
+    resolve_region,
+)
 from ..countries import DEFAULT_COUNTRY, UnknownCountryError, get_country
 from ..db import get_db
 from ..models import BoQUpload, BoQItem
@@ -194,18 +200,27 @@ def _build_item(row, mapping: dict[str, str], row_number: int, country: str) -> 
     else:
         amount_value = round(_as_float(amount, "amount", row_number), 2)
 
-    classification = classifier.classify(description, country=country)
+    # The section comes from the schedule item when the description IS a schedule item,
+    # and from the keyword rules otherwise. See boq_template.classify_for_upload: a bill
+    # built from the template therefore lands in the section the template advertised.
+    section, matched_code = boq_template.classify_for_upload(country, description)
+    # The schedule's own code wins when the description matches a schedule item exactly -
+    # it names the item, whereas a file may carry only the chapter ("III") or a reference
+    # of the analyst's own. A line the schedule does not hold keeps whatever code the file
+    # supplied, which is what makes "not in the schedule" reportable.
+    supplied_code = _as_text(_row_value(row, mapping, "sor_code"), limit=32)
+    sor_code = matched_code or supplied_code
     return BoQItem(
         raw_description=description,
         unit=unit,
         quantity=quantity,
         boq_rate=rate,
         amount=amount_value,
-        smm2_section=classification.smm2_section,
+        smm2_section=section,
         classified_by="auto",
         is_placeholder=_as_bool(_row_value(row, mapping, "is_placeholder"), default=False),
         replace_with=_as_text(_row_value(row, mapping, "replace_with")),
-        sor_code=_as_text(_row_value(row, mapping, "sor_code"), limit=32),
+        sor_code=sor_code,
     )
 
 
@@ -214,10 +229,21 @@ def _build_item(row, mapping: dict[str, str], row_number: int, country: str) -> 
 # --------------------------------------------------------------------------- #
 @router.get("/template")
 def download_template(
-    format: str = Query("csv", pattern="^(csv|xlsx)$"),
+    format: str = Query(
+        "xlsx",
+        pattern="^(csv|xlsx)$",
+        description=(
+            "xlsx (default) is THE template: the schedule of rates plus its instructions sheet. "
+            "csv is the same item list without the instructions, for scripted use."
+        ),
+    ),
     country: str = Query(DEFAULT_COUNTRY, description="SG | IN"),
 ) -> StreamingResponse:
-    """Download a ready-to-fill BoQ template for one country."""
+    """Download the BoQ template for one country.
+
+    One template per market. It lists every item in that market's schedule of rates and
+    carries its own instructions, because a 450-1,900 row sheet is unusable without them.
+    """
     registry = resolve_country(country)
     if format == "xlsx":
         payload = boq_template.template_xlsx_bytes(registry.code)
@@ -335,16 +361,76 @@ async def upload_boq(
         unclassified_count=unclassified,
         items=[schemas.BoQItemOut.model_validate(i) for i in items],
         counts_by_section=dict(sorted(counts.items())),
+        sections_summary=_sections_summary(registry.code, items, counts, library_sections(db, registry.code)),
+        sor_catalogue=boq_template.catalogue_totals(registry.code),
         warnings=warnings,
         assumptions=[
             f"Classification is an automated keyword match against the "
-            f"{registry.measurement_standard} rule table. It is basis=derived and must be "
-            f"reviewed by a quantity surveyor.",
+            f"{registry.measurement_standard} rule table, refined by the "
+            f"{boq_template.catalogue_totals(registry.code)['sor_items']:,}-item schedule of rates for "
+            f"this market: a description that matches a schedule item exactly is placed in that "
+            f"item's section. It is basis=derived and must be reviewed by a quantity surveyor.",
             f"Region set to {region.region_name} ({region.region_code}), carrying a "
             f"{region.factor:.3f} multiplier on benchmark base rates. Change it on the "
             f"benchmark run if this BoQ is for a different location.",
         ],
     )
+
+
+def library_sections(db: Session, country_code: str) -> set[str]:
+    """Sections the benchmark rate library can actually price for this market."""
+    return {name for name in load_benchmark_rates(db, country=country_code)}
+
+
+def _sections_summary(
+    country_code: str,
+    items: list[BoQItem],
+    counts: dict[str, int],
+    priceable: set[str],
+) -> list[dict]:
+    """The per-section summary, with the schedule of rates factored in.
+
+    One row per section in the upload, and it answers the questions a QS asks of an
+    upload before trusting it:
+
+      lines                     how much of the bill sits in this section
+      from_sor_template         how many lines carry a schedule code, i.e. came from the
+                                template rather than being written by hand
+      matched_sor_description   how many lines are a schedule item's own wording, whether
+                                or not the code column survived the edit
+      sor_items_available       how many schedule items this market has for the section -
+                                the ceiling on how much of the section the template covers
+      sor_items_bookable        of those, how many are in a comparable unit
+      benchmark_rate_available  whether the rate library can price the section at all
+
+    A section the library cannot price is the actionable row: those lines can only be
+    benchmarked against a manual rate.
+    """
+    per_section = {
+        entry["smm2_section"]: entry for entry in boq_template.sections_summary(country_code)
+    }
+    matched_descriptions = {
+        item.id
+        for item in items
+        if boq_template.match_description(country_code, item.raw_description) is not None
+    }
+
+    rows: list[dict] = []
+    for section in sorted(counts, key=lambda name: (-counts[name], name)):
+        members = [item for item in items if item.smm2_section == section]
+        catalogue_entry = per_section.get(section, {})
+        rows.append(
+            {
+                "smm2_section": section,
+                "lines": len(members),
+                "from_sor_template": sum(1 for item in members if (item.sor_code or "").strip()),
+                "matched_sor_description": sum(1 for item in members if item.id in matched_descriptions),
+                "sor_items_available": catalogue_entry.get("sor_items", 0),
+                "sor_items_bookable": catalogue_entry.get("bookable", 0),
+                "benchmark_rate_available": section in priceable,
+            }
+        )
+    return rows
 
 
 @router.get("", response_model=list[schemas.UploadSummaryOut])
@@ -409,6 +495,12 @@ def get_upload(upload_id: int, db: Session = Depends(get_db)) -> schemas.UploadD
         currency=upload.currency,
         items=[schemas.BoQItemOut.model_validate(i) for i in items],
         counts_by_section=dict(sorted(counts.items())),
+        # Reopening an upload shows the same sections summary as uploading it did, so the
+        # schedule coverage can be read without re-uploading the file.
+        sections_summary=_sections_summary(
+            upload.country, items, counts, library_sections(db, upload.country)
+        ),
+        sor_catalogue=boq_template.catalogue_totals(upload.country),
     )
 
 

@@ -273,6 +273,10 @@ export default function App() {
       unclassified_count: items.filter(function (i) { return i.smm2_section === 'Unclassified' }).length,
       items: items,
       counts_by_section: detail.counts_by_section,
+      // Reopening an upload carries the same sections summary the upload itself reported,
+      // so schedule coverage is readable without re-uploading the file.
+      sections_summary: detail.sections_summary || [],
+      sor_catalogue: detail.sor_catalogue || {},
       warnings: [],
       assumptions: [],
     })
@@ -677,6 +681,7 @@ export default function App() {
           onUpload={handleUpload}
           onLoadUpload={handleLoadUpload}
           onDownloadTemplate={handleTemplate}
+          templateStatus={downloadStatus}
         />
       ) : null}
 

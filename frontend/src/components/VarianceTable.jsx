@@ -157,6 +157,11 @@ export default function VarianceTable(props) {
                   NOT BENCHMARKED - held at the tendered rate
                 </span>
               ) : null}
+              {line.sor_code ? (
+                <span className="flag" title="Quoted from this market's schedule of rates">
+                  schedule item {line.sor_code}
+                </span>
+              ) : null}
               {flagSummary(line).map(function (label) { return <span key={label} className="flag">{label}</span> })}
             </div>
           </td>
@@ -271,6 +276,9 @@ export default function VarianceTable(props) {
 
   function groupHeaderRow(group, isCollapsed) {
     const untested = group.rows.filter(function (r) { return !r.is_benchmarked; }).length
+    // How much of this section was quoted from the market's schedule of rates rather than
+    // written by hand: the section-level view of the upload's sections summary.
+    const fromSchedule = group.rows.filter(function (r) { return r.sor_code }).length
     return (
       <tr key={'group-' + group.name} className="group-row">
         <td colSpan={COLUMNS.length}>
@@ -284,6 +292,9 @@ export default function VarianceTable(props) {
             <span className="section-pill">{group.name}</span>
             <span className="muted small">
               {group.rows.length} line(s)
+              {fromSchedule
+                ? ' \u00b7 ' + fromSchedule + ' from the schedule of rates'
+                : ''}
               {untested ? ' \u00b7 ' + untested + ' not benchmarked' : ''}
             </span>
           </button>

@@ -11,7 +11,7 @@ export default function ExportBar(props) {
         <HelpPopout
           title="What to download, and when"
           items={[
-            'The BoQ template is a blank, correctly formatted bill for the selected market. The XLSX version carries a second sheet explaining every column.',
+            'The BoQ template is the one download that is not a result: a single XLSX that lists every item in this market\'s schedule of rates, with its instructions on a second sheet. Fill in quantities and your own rates, delete the rows you do not need.',
             'Line items is the working file: every BoQ line with its adjusted benchmark rate, variance and the basis behind it.',
             'Section subtotals is the one-page summary for a commercial review - one row per section.',
             'Waterfall gives the reconciliation steps as data, if you want to rebuild the chart elsewhere.',
@@ -31,12 +31,8 @@ export default function ExportBar(props) {
       <div className="row" style={{ marginTop: 10 }}>
         <span className="muted small" style={{ minWidth: 92, fontWeight: 700 }}>BoQ TEMPLATE</span>
         <button type="button" className="secondary" disabled={props.busy}
-                onClick={function () { props.onDownloadTemplate('csv'); }}>
-          Template (.csv)
-        </button>
-        <button type="button" className="secondary" disabled={props.busy}
                 onClick={function () { props.onDownloadTemplate('xlsx'); }}>
-          Template (.xlsx)
+          Template (.xlsx, schedule of rates + instructions)
         </button>
       </div>
 

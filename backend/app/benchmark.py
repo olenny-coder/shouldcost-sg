@@ -803,6 +803,10 @@ class LineResult:
     boq_amount: float
     smm2_section: str
     classified_by: str
+    # The schedule-of-rates code the line was quoted from, when it came from the template.
+    # Carried through so the variance table's section subtotals can say how much of each
+    # section came from the market's own schedule. See README "The upload template".
+    sor_code: str
     is_benchmarked: bool
     exclusion_reason: str | None
     benchmark_base_rate: float | None
@@ -1350,6 +1354,7 @@ def build_benchmark(
                     boq_amount=boq_amount,
                     smm2_section=item.smm2_section,
                     classified_by=item.classified_by,
+                    sor_code=(item.sor_code or ""),
                     is_benchmarked=False,
                     exclusion_reason=exclusion_reason,
                     benchmark_base_rate=None,
@@ -1510,6 +1515,7 @@ def build_benchmark(
                 boq_amount=boq_amount,
                 smm2_section=item.smm2_section,
                 classified_by=item.classified_by,
+                sor_code=(item.sor_code or ""),
                 is_benchmarked=True,
                 exclusion_reason=None,
                 benchmark_base_rate=round(adjusted_base_rate, 2),

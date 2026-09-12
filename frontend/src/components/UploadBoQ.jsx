@@ -39,11 +39,12 @@ export default function UploadBoQ(props) {
         <HelpPopout
           title="Uploading a BoQ"
           items={[
-            'Start from the template so the column names are right: use the download button below, or Download > BoQ template.',
+            'Start from the template so the column names and the item vocabulary are right: one download button below, with its instructions on a second sheet.',
+            'The template lists the whole schedule of rates for this market - hundreds of items - so you fill in quantities against the real wording instead of retyping descriptions. Delete the rows you do not need.',
             'Required columns are description, unit, quantity and rate. Common alternative spellings are understood, and an amount column is optional.',
             'Drop the file anywhere in the dashed box, or click it to browse. Your file is parsed in memory on the server and never stored.',
             'Units matter. A line whose unit does not match the benchmark rate unit is set aside rather than compared, because comparing an m2 rate with an m rate is meaningless.',
-            'After upload, check the classification result. Lines the classifier could not place are counted as Unclassified and can be fixed in the variance table.',
+            'After upload, check the sections summary: it shows, per section, how many lines came from the schedule, how many the rate library can price, and how many schedule items exist for that section.',
             'Prefer a seeded sample to see the whole app working? Use the recent-uploads buttons.',
           ]}
           footnote="Accepted formats are CSV and XLSX. Legacy .xls must be re-saved as .xlsx or .csv."
@@ -58,13 +59,19 @@ export default function UploadBoQ(props) {
       </p>
 
       <div className="row" style={{ marginTop: 8 }}>
-        <button type="button" className="secondary" onClick={function () { props.onDownloadTemplate('csv'); }}>
-          Download the {country.name} template (.csv)
-        </button>
         <button type="button" className="secondary" onClick={function () { props.onDownloadTemplate('xlsx'); }}>
-          Template with instructions (.xlsx)
+          Download the {country.name} BoQ template (.xlsx, 2 sheets: the schedule of rates + instructions)
         </button>
       </div>
+      <p className="muted small" style={{ marginTop: 6 }}>
+        One template per market, and the instructions are built into it. The BoQ sheet lists every
+        item in the {country.name} schedule of rates, with a <code>section</code> column so you can
+        filter to the rows the rate library can price, and a <code>sor_code</code> so a line can be
+        traced back to the schedule. Fill in quantities and your own rates.
+      </p>
+      {props.templateStatus ? (
+        <p className="muted small" style={{ marginTop: 4 }}>{props.templateStatus}</p>
+      ) : null}
 
       <div
         className={dragging ? 'dropzone dragging' : 'dropzone'}
@@ -138,23 +145,73 @@ export default function UploadBoQ(props) {
             </div>
           </dl>
 
+          <h3>Sections summary</h3>
+          <p className="muted small">
+            {upload.sor_catalogue && upload.sor_catalogue.sor_items ? (
+              <>
+                The {country.name} schedule of rates holds{' '}
+                <strong>{upload.sor_catalogue.sor_items.toLocaleString()}</strong> items;{' '}
+                <strong>{(upload.sor_catalogue.sor_items - upload.sor_catalogue.outside_sections).toLocaleString()}</strong>{' '}
+                fall in a section the rate library prices and{' '}
+                <strong>{upload.sor_catalogue.outside_sections.toLocaleString()}</strong> are outside
+                the ten sections (painting, glazing, metalwork, roofing, joinery, finishes,
+                demolition, repairs) and need a manual rate. This table shows how your lines map onto
+                it. {upload.sor_catalogue.sources && upload.sor_catalogue.sources.length
+                  ? 'Schedule: ' + upload.sor_catalogue.sources.join('; ') + '.'
+                  : ''}
+              </>
+            ) : (
+              <>How your lines map onto the market's schedule of rates, section by section.</>
+            )}
+          </p>
           <div className="table-scroll">
             <table className="data-table compact">
               <thead>
-                <tr><th>Section</th><th className="num">Lines</th></tr>
+                <tr>
+                  <th>Section</th>
+                  <th className="num">Lines</th>
+                  <th className="num" title="Lines carrying a schedule code, i.e. taken from the template">
+                    From template
+                  </th>
+                  <th className="num" title="Lines whose wording matches a schedule item exactly">
+                    Schedule wording
+                  </th>
+                  <th className="num" title="Schedule items this market holds for the section">
+                    Schedule items
+                  </th>
+                  <th>Rate library</th>
+                </tr>
               </thead>
               <tbody>
-                {Object.keys(upload.counts_by_section).map(function (section) {
+                {(upload.sections_summary || []).map(function (row) {
                   return (
-                    <tr key={section}>
-                      <td>{section}</td>
-                      <td className="num">{upload.counts_by_section[section]}</td>
+                    <tr key={row.smm2_section}>
+                      <td>
+                        <span className={row.smm2_section === 'Unclassified' ? 'muted' : 'section-pill'}>
+                          {row.smm2_section}
+                        </span>
+                      </td>
+                      <td className="num">{row.lines}</td>
+                      <td className="num">{row.from_sor_template || 0}</td>
+                      <td className="num">{row.matched_sor_description || 0}</td>
+                      <td className="num">{row.sor_items_available || 0}</td>
+                      <td>
+                        {row.benchmark_rate_available
+                          ? <span className="badge basis-measured">priced</span>
+                          : <span className="badge basis-assumed">manual rate needed</span>}
+                      </td>
                     </tr>
                   );
                 })}
               </tbody>
             </table>
           </div>
+          <p className="muted small">
+            "Schedule items" is how many items the market's schedule holds for that section, so it is
+            the ceiling on how much of the section the template could cover. A section the library
+            cannot price can only be benchmarked against a rate you supply - the Coverage panel on
+            the benchmark views tracks exactly those lines.
+          </p>
         </div>
       ) : null}
     </section>

@@ -351,10 +351,22 @@ def test_template_csv_downloads_and_round_trips(client_module, country) -> None:
     )
 
     # The unclassified share is real, not a defect: the schedules span trades outside the
-    # library's ten sections, and those lines are exactly the ones that need a manual rate.
-    priceable = sum(1 for row in items if row[2])
+    # library's ten sections (painting, glazing, metalwork, roofing, joinery, finishes,
+    # demolition, repairs), and those lines are exactly the ones that need a manual rate.
+    priceable = sum(1 for item in items if item.section)
     assert body["unclassified_count"] == len(items) - priceable
     assert body["unclassified_count"] < len(items), "some schedule items must be priceable"
+
+    # The upload reports the same split per section, with the schedule of rates factored in.
+    summary = {row["smm2_section"]: row for row in body["sections_summary"]}
+    assert summary, "an upload must carry its sections summary"
+    described = sum(row["matched_sor_description"] for row in body["sections_summary"])
+    assert described == len(items), (
+        "every line of the template is a schedule description, so all of them must match one"
+    )
+    assert summary["Unclassified"]["lines"] == body["unclassified_count"]
+    assert summary["Unclassified"]["benchmark_rate_available"] is False
+    assert body["sor_catalogue"]["sor_items"] == len(items)
 
 
 @pytest.mark.parametrize("country", ["SG", "IN"])
@@ -376,6 +388,12 @@ def test_template_xlsx_has_boq_and_instructions_sheets(client_module, country) -
     assert "HOW TO USE THIS TEMPLATE" in instructions
     assert "Measurement standard" in instructions
     assert "FILTER ON THE section COLUMN" in instructions
+    # One template, and its instructions travel with it: where the pre-filled rates come
+    # from, and what the market's schedule holds section by section.
+    assert "WHERE THE RATES COME FROM" in instructions
+    assert "SECTIONS SUMMARY" in instructions
+    assert "There is only one template" in instructions
+    assert "escalated to 2026" in instructions.lower() or "ESCALATED TO 2026" in instructions
 
 
 def _csv_bytes(rows: list[list]) -> bytes:
