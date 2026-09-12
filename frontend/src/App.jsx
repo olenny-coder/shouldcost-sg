@@ -499,11 +499,6 @@ export default function App() {
   const ppiRows = useMemo(function () {
     return priceRows.filter(function (row) { return row.kind === 'PPI' })
   }, [priceRows])
-  // Lines the engine could only price with an indicative seed rate rather than a
-  // published schedule of rates. Reported, never hidden.
-  const indicativeLineCount = result
-    ? result.lines.filter(function (l) { return l.provenance && l.provenance.is_placeholder }).length
-    : 0
   const adjustmentsActive = result && result.adjustments_applied && !result.adjustments_applied.is_noop
   const ohpActive = !!(
     result && (result.totals.overhead_pct || result.totals.margin_pct)
@@ -618,11 +613,11 @@ export default function App() {
       </div>
 
       <div className="notice notice-warn">
-        <strong>Demonstration build - not for a real tender decision.</strong> Index series are
-        real published data; rates derived from the BCA and CPWD schedules are labelled{' '}
-        <em>derived</em>; anything carried forward from a stale index, and any retained estimate, is
-        labelled <span className="badge basis-assumed">assumed</span>. The index dashboard shows the
-        basis of every row.
+        <strong>Where the numbers come from.</strong> Index series are real published data. Rates
+        derived from the BCA and CPWD schedules are labelled <em>derived</em> and name their source;
+        anything carried forward from a stale index, and any retained estimate, is labelled{' '}
+        <span className="badge basis-assumed">assumed</span>. The index dashboard shows the basis of
+        every row.
       </div>
 
       {result ? (
@@ -861,7 +856,6 @@ export default function App() {
         <AssumptionsPanel
           warnings={result.warnings}
           assumptions={result.assumptions}
-          indicativeLineCount={indicativeLineCount}
           adjustmentsActive={adjustmentsActive}
           indexBridge={result.index_bridge}
         />

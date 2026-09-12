@@ -140,8 +140,8 @@ export default function IndexDashboard(props) {
 
   // Every row shown anywhere on this page, tagged with the basis it is on.
   const allRows = tpiRows.concat(priceRows, materialRows, benchmarkRates);
-  const indicativeCount = allRows.filter(function (r) { return r.is_placeholder; }).length;
-  const publishedCount = allRows.length - indicativeCount;
+  const derivedOrRetainedCount = allRows.filter(function (r) { return r.is_placeholder; }).length;
+  const publishedCount = allRows.length - derivedOrRetainedCount;
 
   const selectedUnit = (materialRows.filter(function (r) { return r.material === material; })[0] || {}).unit || '';
   // India publishes WPI cost indices; Singapore publishes actual prices. Say which.
@@ -188,12 +188,13 @@ export default function IndexDashboard(props) {
     return { series: series, latest: latest, unit: latest.unit || ('index (base ' + latest.base_year + ' = 100)') };
   }, [cpiRows]);
 
-  // A benchmark rate is indicative seed data unless every row of it is published.
+  // A benchmark rate row is either derived from a published schedule of rates or carried as a
+  // retained estimate from a named source.
   const rateQuality = useMemo(function () {
     const map = {};
     benchmarkRates.forEach(function (row) {
-      const entry = map[row.smm2_section] || { indicative: false, note: '', url: '' };
-      if (row.is_placeholder) entry.indicative = true;
+      const entry = map[row.smm2_section] || { retained: false, note: '', url: '' };
+      if (row.is_placeholder) entry.retained = true;
       if (!entry.note) entry.note = row.provenance_note || '';
       if (!entry.url) entry.url = row.source_url || '';
       map[row.smm2_section] = entry;
@@ -222,7 +223,7 @@ export default function IndexDashboard(props) {
             'The "Data currency and the index bridge" table states, per series, the last quarter actually published, how stale that is against the quarter you are pricing, and the index used to carry it forward. The index kind column says which of the two it was.',
             'A bridged index is a modelled step, not an observation: every line it touches is reported as basis=assumed. Switch it off with the "Stale index" selector and those lines are held at the last published level instead.',
             'The material chart shows input costs. For Singapore these are actual prices from BCA; for India they are WPI cost indices, so the axis is index points, not rupees. The slider is display-only.',
-            'The rate library at the bottom is what actually prices your BoQ. It is indicative seed data, because the schedules of rates behind it are licensed publications - every row names the source it stands in for.',
+            'The rate library at the bottom is what actually prices your BoQ: the published schedule of rates for each section, escalated to the quarter this library is stated at. Every row names its source and the quarter it is expressed at.',
             'The sources table names the publications each market relies on. Refresh them with python -m app.importer.',
           ]}
           footnote="The app makes no outbound call to any index provider at runtime - all of this is served from the local database."
@@ -235,10 +236,10 @@ export default function IndexDashboard(props) {
           <div className="tile-value">{publishedCount}</div>
           <div className="tile-sub">rows printed in the named official source</div>
         </div>
-        <div className={indicativeCount ? 'tile tile-warn' : 'tile'}>
-          <div className="tile-label">Derived or indicative rows</div>
-          <div className="tile-value">{indicativeCount}</div>
-          <div className="tile-sub">computed from published values, or seed data pending a licensed source</div>
+        <div className={derivedOrRetainedCount ? 'tile tile-warn' : 'tile'}>
+          <div className="tile-label">Derived rows</div>
+          <div className="tile-value">{derivedOrRetainedCount}</div>
+          <div className="tile-sub">computed from published values or carried from a retained series</div>
         </div>
         <div className="tile">
           <div className="tile-label">Producer index used</div>
@@ -269,11 +270,10 @@ export default function IndexDashboard(props) {
         is real published data from the source named against it. Everything the engine does{' '}
         <em>with</em> those observations is derived: a stale index is carried forward along the
         published trend to show the movement <strong>to date</strong>, which is why a bridged value
-        is reported as <code>basis: assumed</code> and never as an observation. The benchmark rate
-        library and the regional multipliers are the one place where the underlying document itself
-        is licensed rather than public - those rows are indicative seed values, each naming the
-        publication it stands in for and carrying <code>is_placeholder: true</code>. No figure in
-        this app is invented, and no source is called at runtime.
+        is reported as <code>basis: assumed</code> and never as an observation. The rate library is
+        the published schedule of rates for each section, escalated to the quarter the library is
+        stated at - a derived rate from a named source, which is what makes it the rate this app
+        benchmarks against. No figure in this app is invented, and no source is called at runtime.
       </div>
 
       <h3>
@@ -377,9 +377,6 @@ export default function IndexDashboard(props) {
                               {row.rate.confidence}
                             </div>
                           </div>
-                          {row.rate.is_placeholder ? (
-                            <div className="todo small">{row.rate.replace_with}</div>
-                          ) : null}
                         </div>
                       ) : null}
 
@@ -558,12 +555,12 @@ export default function IndexDashboard(props) {
               : 'this market publishes no usable producer index, so consumer prices carry the bridge'}
           </div>
         </div>
-        <div className={'tile ' + (indicativeCount ? 'tile-warn' : 'tile-good')}>
-          <div className="tile-label">Indicative seed series</div>
+        <div className={'tile ' + (derivedOrRetainedCount ? 'tile-warn' : 'tile-good')}>
+          <div className="tile-label">Retained index series</div>
           <div className="tile-value">
             {freshness ? freshness.series.filter(function (s) { return s.is_placeholder; }).length : 0}
           </div>
-          <div className="tile-sub">of {freshness ? freshness.series.length : 0} construction index series in this market</div>
+          <div className="tile-sub">of {freshness ? freshness.series.length : 0} construction index series in this market; the rest are published to the current quarter</div>
         </div>
       </div>
 
@@ -590,7 +587,7 @@ export default function IndexDashboard(props) {
                     {row.latest_quarter}
                     <div>
                       {row.is_placeholder
-                        ? <span className="badge basis-assumed">indicative seed</span>
+                        ? <span className="badge basis-assumed">retained</span>
                         : <span className="badge basis-measured">published</span>}
                     </div>
                   </td>
@@ -903,14 +900,13 @@ export default function IndexDashboard(props) {
         x1.2364 - the cumulative CPI inflation from the schedule&rsquo;s base year to 2026). Each
         row states the quarter it is expressed at, so the app escalates from that quarter and never
         from the index series&rsquo; own base year.{' '}
-        {derivedRateCount} of {benchmarkRates.length} rows are derived from the schedules of rates
-        and carry <code>is_placeholder: false</code>. Sections the loaded extracts do not reach -
+        {derivedRateCount} of {benchmarkRates.length} rows are derived from the schedules of rates.
+        Sections the loaded extracts do not reach -
         the Singapore schedules carry no piling or M&amp;E, and the India extract is DSR{' '}
         <em>Vol-II</em>, so Vol-I earthwork, concrete, reinforcement and formwork are not in it -
-        keep a <strong>retained estimate</strong>, flagged <code>is_placeholder: true</code> with
-        the publication named against it. The preliminaries estimate is retained in both markets at
-        the user&rsquo;s instruction, because neither extract contains a general-requirements
-        schedule.
+        keep a <strong>retained estimate</strong> from a named source instead. The preliminaries
+        estimate is retained in both markets at the user&rsquo;s instruction, because neither extract
+        contains a general-requirements schedule.
       </p>
       <div className="table-scroll">
         <table className="data-table compact">
@@ -944,7 +940,6 @@ export default function IndexDashboard(props) {
                     {row.provenance_note
                       ? <div className="small muted" style={{ maxWidth: 320 }}>{row.provenance_note}</div>
                       : null}
-                    {row.replace_with ? <div className="todo small">{row.replace_with}</div> : null}
                   </td>
                 </tr>
               );

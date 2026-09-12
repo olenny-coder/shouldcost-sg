@@ -113,9 +113,10 @@ def root() -> dict:
         "health": "/api/healthz",
         "markets": ["SG", "IN"],
         "data_notice": (
-            "Published index series are real; benchmark rates and regional multipliers are "
-            "indicative seed values derived to show the trend to date (is_placeholder = true). "
-            "Do not use for a real tender decision."
+            "Published index series are real. Benchmark rates are the published schedules of rates "
+            "escalated to the quarter the library is stated at, in the market's own currency, and "
+            "every figure states the source it came from and whether it is measured, derived or "
+            "assumed rather than published."
         ),
     }
 

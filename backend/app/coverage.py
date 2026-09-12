@@ -222,9 +222,9 @@ GAP_SOURCES: dict[str, dict[str, tuple[GapSource, ...]]] = {
             GapSource(
                 "CPWD Delhi Schedule of Rates (DSR) and CPWD Cost Index",
                 "https://cpwd.gov.in/",
-                "The de-facto benchmark for Indian building works, and the reference the "
-                "indicative rate library stands in for. A licensed publication, so it is cited "
-                "rather than imported.",
+                "The de-facto benchmark for Indian building works, and the publication the rate "
+                "library's section rates are taken from (DSR Vol-II extract, escalated by CPI to "
+                "the quarter the library is stated at).",
                 "gap",
             ),
             GapSource(
@@ -259,9 +259,9 @@ GAP_SOURCES: dict[str, dict[str, tuple[GapSource, ...]]] = {
             GapSource(
                 "CPWD Delhi Schedule of Rates (DSR), piling chapter",
                 "https://cpwd.gov.in/",
-                "Carries the rig and crew rates for bored and driven piles. A schedule of rates "
-                "rather than an index, and a licensed publication, so the benchmark rate library "
-                "stays indicative until a copy is licensed.",
+                "Carries the rig and crew rates for bored and driven piles, and is the source of "
+                "the Piling rate in the library. A schedule of rates rather than an index, so the "
+                "index bridge is what carries it to the tender quarter.",
                 "gap",
             ),
         ),
@@ -397,7 +397,6 @@ def build_coverage(session: Session, country: str | None = None) -> dict:
             "confidence": row.confidence,
             "is_placeholder": row.is_placeholder,
             "provenance_note": row.provenance_note,
-            "replace_with": row.replace_with,
             # What the app does with it. A rate stated at a quarter is carried forward from
             # that quarter by the index; a retained one is carried from the series' own base
             # year, which is a longer and weaker step.

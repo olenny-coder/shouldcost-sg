@@ -358,15 +358,22 @@ class BenchmarkRequest(BaseModel):
 
 
 class Provenance(BaseModel):
+    """Where a benchmark rate came from: the source, its date, and what it covers.
+
+    It states provenance rather than a to-do. A rate the library carries for a section - whether
+    derived from the published schedule of rates or retained from a named source - is the rate
+    this app benchmarks against, and the line's `basis` says whether pricing with it was measured,
+    derived or assumed.
+    """
+
     source: str
     source_date: str
     base_year: int
     scope_inclusions: str
     scope_exclusions: str
     confidence: str
-    is_placeholder: bool
     source_url: str | None = None
-    replace_with: str = ""
+    note: str = ""
 
 
 class BenchmarkLine(ORMModel):

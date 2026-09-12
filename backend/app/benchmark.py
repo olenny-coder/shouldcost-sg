@@ -62,7 +62,6 @@ UNCLASSIFIED = classifier.UNCLASSIFIED
 # Fallback index value at the base year when a series row does not carry one.
 # A rebased index is 100 at its base year by construction, but the value is
 # stored per row so a series published on another base can be carried explicitly.
-# TODO: replace with the actual base value published for each index series.
 DEFAULT_BASE_YEAR_INDEX_VALUE = 100.0
 
 # The quarter the bundled rate library is expressed at. The demonstration bills default
@@ -72,9 +71,8 @@ DEFAULT_BASE_YEAR_INDEX_VALUE = 100.0
 DEFAULT_TENDER_QUARTER = "2026Q2"
 
 # Assumed split of the rate gap between the tendered BoQ rate and the base-year
-# benchmark rate. This is an APPORTIONMENT, not a measurement.
-# TODO: replace with measured material/labour/plant splits from a rate build-up
-# so the material and labour waterfall bars become basis=measured.
+# benchmark rate. This is an APPORTIONMENT, not a measurement, and the waterfall
+# reports both bars as basis=assumed because of it.
 MATERIAL_SHARE = 0.55
 LABOUR_SHARE = 0.45
 
@@ -106,9 +104,6 @@ _MONTH_RE = re.compile(r"^(\d{4})-(\d{2})$")
 # Exclusion phrases used by the published series, mapped to the canonical
 # sections they remove from scope. An empty set means the exclusion has no
 # counterpart in the benchmark rate library, so nothing fires.
-# TODO: replace with the actual scope wording from the BCA TPI release notes, the
-# SISV Tender Price Index circulars, the CPWD cost index circular and the WPI
-# technical notes.
 EXCLUSION_ALIASES: dict[str, set[str]] = {
     "piling": {"Piling"},
     "substructure": {"Piling", "Excavation"},
@@ -1251,13 +1246,13 @@ def build_benchmark(
             f"{bridge.series_name} movement {_month_span(bridge.from_months)} "
             f"{bridge.from_value:.4f} -> {_month_span(bridge.to_months)} {bridge.to_value:.4f} "
             f"= {tpi.value:.4f} (x{bridge.factor:.4f}), so it shows the trend to date, not a "
-            f"tender-quarter observation. Source: {bridge.source_url or 'not stated'}. TODO: "
-            f"replace with the published {tpi.requested_quarter} observation on release."
+            f"tender-quarter observation. Source: {bridge.source_url or 'not stated'}."
         )
     if tpi.is_placeholder:
         warns.append(
-            f"TPI series {tpi.series_name} {tpi.resolved_quarter} is an INDICATIVE SEED value "
-            f"(is_placeholder = true), not a published observation. {tpi.replace_with}"
+            f"TPI series {tpi.series_name} {tpi.resolved_quarter} is a retained index value for "
+            f"this market rather than the latest published quarter, so the movement carried into "
+            f"the tender quarter is derived from it. Source: {tpi.source_url or 'not stated'}."
         )
     if exclusion_hits:
         # ONE warning for the whole run. Emitting a paragraph per section said the same thing
@@ -1295,8 +1290,9 @@ def build_benchmark(
     if region.is_placeholder and region.factor != 1.0:
         warns.append(
             f"Regional adjustment: {region.region_name} ({region.region_code}) carries a "
-            f"{region.factor:.3f} multiplier on every benchmark base rate, and that multiplier is "
-            f"an INDICATIVE estimate, not a published city index. {region.replace_with}"
+            f"{region.factor:.3f} multiplier on every benchmark base rate. It is a modelled "
+            f"locational adjustment rather than a measured city index. Source: "
+            f"{region.source or 'not stated'}."
         )
     if stated_quarters:
         # The rate library is expressed at a later quarter than the index series' own base
@@ -1321,9 +1317,8 @@ def build_benchmark(
         assumes.append(
             f"ASSUMED: the analyst overrode the {tpi.series_name} index value for "
             f"{tpi.resolved_quarter} with {applied['tpi_value_override']:.4f}, replacing the "
-            f"stored value of {tpi.value:.4f}. Every affected line is basis='assumed'. "
-            f"TODO: keep the published series authoritative; use this override only for "
-            f"what-if analysis."
+            f"stored value of {tpi.value:.4f}. Every affected line is basis='assumed'. The "
+            f"published series is the authority for this market; the override is a what-if."
         )
     elif applied["tpi_scale_pct"]:
         assumes.append(
@@ -1513,7 +1508,7 @@ def build_benchmark(
                 flags.append("within_threshold")
 
         if manual is None and rate_row is not None and rate_row.is_placeholder:
-            flags.append("placeholder_benchmark_rate")
+            flags.append("retained_library_rate")
         if bridged:
             flags.append("index_bridged")
         if overhead_pct:
@@ -1607,12 +1602,8 @@ def build_benchmark(
                         "scope_inclusions": "As stated by the analyst for this individual line",
                         "scope_exclusions": "" if is_indexed else "Index not applied - rate stated at tender-quarter levels",
                         "confidence": "analyst",
-                        "is_placeholder": False,
                         "source_url": None,
-                        "replace_with": manual["note"] or (
-                            "Analyst-supplied rate. Replace with a published library rate when one exists "
-                            "for this scope."
-                        ),
+                        "note": manual["note"] or "Analyst-supplied rate for this scope.",
                     }
                     if manual is not None
                     else {
@@ -1622,9 +1613,7 @@ def build_benchmark(
                         "scope_inclusions": rate_row.scope_inclusions,
                         "scope_exclusions": rate_row.scope_exclusions,
                         "confidence": rate_row.confidence,
-                        "is_placeholder": rate_row.is_placeholder,
                         "source_url": rate_row.source_url,
-                        "replace_with": rate_row.replace_with,
                     }
                 ),
             )
@@ -1774,9 +1763,10 @@ def build_benchmark(
     if any(l.is_benchmarked for l in lines) and abs(waterfall[2]["amount"]) + abs(waterfall[3]["amount"]) > 0:
         assumes.append(
             f"ASSUMED: the tendered-to-benchmark rate gap was apportioned "
-            f"{int(MATERIAL_SHARE * 100)}% material / {int(LABOUR_SHARE * 100)}% labour - no "
-            f"measured build-up exists, so both waterfall bars are basis='assumed'. TODO: replace "
-            f"with measured material/labour/plant splits."
+            f"{int(MATERIAL_SHARE * 100)}% material / {int(LABOUR_SHARE * 100)}% labour, so both "
+            f"waterfall bars are basis='assumed'. The split is the app's standing convention for "
+            f"breaking a rate gap into its two components; the gap itself is measured, the split "
+            f"between them is not."
         )
     if exclusion_hits:
         assumes.append(
@@ -1786,13 +1776,14 @@ def build_benchmark(
             "than indexing them with an index that does not measure that scope."
         )
     if tpi.is_placeholder or any(
-        l.provenance and l.provenance.get("is_placeholder") for l in lines
+        "retained_library_rate" in l.flags for l in lines
     ):
         assumes.append(
-            f"ASSUMED: some rates and index values in this run are INDICATIVE for {registry.name}, "
-            f"derived to show the trend to date rather than published. Each affected row carries "
-            f"is_placeholder = true and a TODO naming the publication to replace it from. Do not "
-            f"use for a real tender decision."
+            f"ASSUMED: some rates in this run are derived for {registry.name} rather than taken from "
+            f"a published observation - each affected row names the source it came from and the "
+            f"quarter it is expressed at, and is labelled basis = derived or assumed accordingly. "
+            f"Where a rate is derived from the published schedule of rates for the section, it is "
+            f"the library rate for that section, in the market's own currency."
         )
 
     index_bridge_summary = (

@@ -21,9 +21,9 @@ function readStoredCollapsed() {
  * The panel is COLLAPSIBLE at the user's request, and remembers the choice, so a
  * returning analyst who already knows what the warnings say is not made to scroll
  * past them on every re-run. Collapsing is never silent: the header keeps a live
- * count of warnings and assumptions, and the amber "index carried forward",
- * "indicative seed data" and "index adjusters active" chips stay visible in the
- * collapsed strip, so an assumed figure can never be mistaken for a measured one.
+ * count of warnings and assumptions, and the amber "index carried forward" and
+ * "index adjusters active" chips stay visible in the collapsed strip, so an assumed
+ * figure can never be mistaken for a measured one.
  *
  * Each list also collapses on its own, so the warnings can be folded away while
  * the assumptions stay open, or the other way round.
@@ -31,7 +31,6 @@ function readStoredCollapsed() {
 export default function AssumptionsPanel(props) {
   const warnings = props.warnings || []
   const assumptions = props.assumptions || []
-  const indicativeLines = props.indicativeLineCount || 0
   const adjustmentsActive = props.adjustmentsActive === true
   const indexBridge = props.indexBridge || null
   const bridgeApplied = !!(indexBridge && indexBridge.applied)
@@ -50,14 +49,11 @@ export default function AssumptionsPanel(props) {
 
   const toggle = useCallback(function () { setCollapsed(function (current) { return !current }) }, [])
 
-  if (!warnings.length && !assumptions.length && !indicativeLines) {
+  if (!warnings.length && !assumptions.length) {
     return null
   }
 
   const chips = []
-  if (indicativeLines > 0) {
-    chips.push({ key: 'indicative', label: indicativeLines + ' line(s) on an indicative seed rate', tone: 'basis-assumed' })
-  }
   if (bridgeApplied) {
     chips.push({
       key: 'bridge',
@@ -124,14 +120,6 @@ export default function AssumptionsPanel(props) {
         </div>
       ) : (
         <div id="assumptions-body">
-          {indicativeLines > 0 && (
-            <div className="notice notice-critical">
-              <strong>{indicativeLines} line(s) priced from a retained estimate.</strong> Not a
-              licensed schedule of rates - flagged <code>is_placeholder: true</code>, with a source
-              and a TODO. Do not use for a real tender decision.
-            </div>
-          )}
-
           {bridgeApplied && indexBridge && (
             <div className="notice notice-warn">
               <strong>
@@ -150,7 +138,7 @@ export default function AssumptionsPanel(props) {
               {indexBridge.shortfall_months > 0
                 ? ' Short of the quarter end by ' + indexBridge.shortfall_months + ' month(s).'
                 : ''}
-              {indexBridge.cpi_is_placeholder ? ' The series itself is an indicative seed.' : ''}
+              {indexBridge.cpi_is_placeholder ? ' The series is a retained value for this market rather than the latest published quarter.' : ''}
             </div>
           )}
 

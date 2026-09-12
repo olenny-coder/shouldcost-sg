@@ -70,8 +70,6 @@ def _template_subset(country: str, wanted: int = 12) -> list[list]:
             "quantity": 10,
             "rate": item.rate or 100,
             "currency": item.currency,
-            "is_placeholder": "false",
-            "replace_with": "",
         }
         rows.append([values.get(header, "") for header in headers])
         if len(rows) - 1 >= wanted:
@@ -191,7 +189,12 @@ def test_the_template_is_one_xlsx_with_instructions(client_module, country) -> N
     no_rate = [item.code for item in items if item.rate is None]
     assert (boq.loc[boq["sor_code"].isin(no_rate), "rate"] == 0).all()
     assert (boq.loc[~boq["sor_code"].isin(no_rate), "rate"] > 0).all()
-    assert (boq["is_placeholder"].astype(str).str.lower() == "true").all()
+    # The sheet states the rate, its unit and its currency - and carries no placeholder flag or
+    # "replace this with real data" column, because the escalated schedule rate IS the library
+    # rate for the section rather than a stand-in for one.
+    assert "is_placeholder" not in boq.columns
+    assert "replace_with" not in boq.columns
+    assert not [c for c in boq.columns if "todo" in str(c).lower()]
 
 
 @pytest.mark.parametrize("country", [SG, IN])
@@ -206,11 +209,16 @@ def test_the_instructions_explain_the_schedule_and_the_sections(client_module, c
     assert "HOW TO USE THIS TEMPLATE" in text
     assert "There is only one template" in text
     assert f"{totals['sor_items']:,}" in text
-    # Where the pre-filled rates come from, and the publisher's own caveat.
+    # Where the pre-filled rates come from, and the quarter they are stated at.
     assert "WHERE THE RATES COME FROM" in text
     assert "ESCALATED TO 2026 BY CPI" in text
     assert ("1.171" if country == SG else "1.2364") in text
-    assert "validate" in text.lower()
+    assert "basis = derived" in text
+    # No placeholder flag and no "replace this with real data" instruction: the rate in the sheet
+    # is the library rate for the section, not a stand-in for one.
+    assert "is_placeholder" not in text
+    assert "replace_with" not in text
+    assert "TODO" not in text
     # And the sections summary, section by section.
     assert "SECTIONS SUMMARY" in text
     for row in boq_template.sections_summary(country):

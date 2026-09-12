@@ -199,7 +199,7 @@ def test_bridged_run_explains_itself_in_warnings_and_assumptions(session) -> Non
     assert "CPI-ALL" in text
     assert "2024Q4" in text
     assert "not a published observation" in text
-    assert "TODO: replace with the published" in text
+    assert "trend to date" in text
 
 
 def test_bridge_is_its_own_waterfall_step(session) -> None:

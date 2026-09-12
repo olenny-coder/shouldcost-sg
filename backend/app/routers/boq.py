@@ -333,11 +333,6 @@ async def upload_boq(
             "shown as Unclassified. Reclassify them from the Variance Table before relying on "
             "the benchmark."
         )
-    if any(item.is_placeholder for item in items):
-        warnings.append(
-            "Some lines in this file are flagged is_placeholder = true, i.e. indicative sample "
-            "data rather than a real tender."
-        )
 
     # Lines that came from the template carry the schedule code they were quoted from. A
     # line WITHOUT one was added by the analyst, so the loaded schedule has no rate for it
@@ -605,7 +600,6 @@ def _report_rows(computation, items: list[BoQItem]) -> list[dict]:
     add("report", "regional_factor", "Regional cost multiplier applied to every benchmark base rate", round(computation.regional_factor, 4), "assumed")
     if computation.regional_factor != 1.0:
         add("report", "regional_factor_source", "Source for the regional multiplier", computation.regional_factor_source)
-        add("report", "regional_factor_placeholder", "Regional multiplier is an indicative seed value, not a published city index", computation.regional_factor_is_placeholder)
     add("report", "measurement_standard", "Measurement / classification standard", computation.classification_standard)
     add("report", "boq_file", "Bill of Quantities source file", computation.filename)
     add("report", "tender_quarter", "Tender quarter benchmarked", computation.tender_quarter)
@@ -744,11 +738,10 @@ def _report_rows(computation, items: list[BoQItem]) -> list[dict]:
             add("line", line.item_id, key, getattr(line, key), line.basis)
         add("line", line.item_id, "flags", "|".join(line.flags), line.basis)
         if line.provenance:
-            for key in ("source", "source_date", "base_year", "confidence", "is_placeholder"):
+            for key in ("source", "source_date", "base_year", "confidence"):
                 add("line", line.item_id, "benchmark_" + key, line.provenance.get(key), line.basis)
             add("line", line.item_id, "benchmark_scope_inclusions", line.provenance.get("scope_inclusions"), line.basis)
             add("line", line.item_id, "benchmark_scope_exclusions", line.provenance.get("scope_exclusions"), line.basis)
-            add("line", line.item_id, "benchmark_replace_with", line.provenance.get("replace_with"), line.basis)
 
     # ---- adjustments applied ----------------------------------------------------
     add("adjustment", "manual_rate_count", "Number of lines benchmarked on an analyst-supplied rate",

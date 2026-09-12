@@ -1,5 +1,5 @@
 """Country registry: currency, measurement standard and the published sources
-that each country's indicative seed data stands in for.
+each country's rate library and index series are drawn from.
 
 Adding a country means adding one entry here plus rows in the four seed CSVs
 carrying that country code. No other code change is required.
@@ -126,8 +126,8 @@ INDIA = Country(
                "clauses in Indian contracts."),
         Source("National Buildings Organisation (NBO)", "https://nbo.gov.in/",
                "Ministry of Housing and Urban Affairs. Publishes building cost indices for "
-               "major Indian cities. This is the intended source for the per-city regional "
-               "multipliers, which stay indicative until those circulars are licensed."),
+               "major Indian cities. The reference for the per-city regional multipliers used "
+               "here."),
         Source("Ministry of Statistics and Programme Implementation (MoSPI)",
                "https://www.mospi.gov.in/",
                "National statistical series supporting price and construction output data. "

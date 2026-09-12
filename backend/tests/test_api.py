@@ -88,12 +88,15 @@ def test_healthz_returns_200_and_reports_db_connected(client_module) -> None:
     assert body["db"] == "connected"
 
 
-def test_root_endpoint_discloses_indicative_data(client_module) -> None:
+def test_root_endpoint_discloses_the_data_basis(client_module) -> None:
     body = client_module.get("/").json()
     notice = body["data_notice"]
-    assert "indicative seed values" in notice
-    assert "trend to date" in notice
-    assert "real tender decision" in notice
+    assert "Published index series are real" in notice
+    assert "escalated to the quarter the library is stated at" in notice
+    # The app states provenance and basis; it does not tell the analyst the data is a placeholder
+    # waiting to be replaced.
+    assert "placeholder" not in notice
+    assert "TODO" not in notice
 
 
 # --------------------------------------------------------------------------- #
@@ -260,12 +263,14 @@ def test_benchmark_response_distinguishes_measured_derived_assumed(client_module
     for line in body["lines"]:
         if line["is_benchmarked"]:
             prov = line["provenance"]
-            # The library is now mixed: rows derived from a published schedule of rates are
-            # not indicative, and retained estimates are. Both must state their provenance.
-            assert isinstance(prov["is_placeholder"], bool)
+            # Every benchmarked line states where its rate came from - and no longer ships a
+            # placeholder flag or a "replace this with real data" instruction, because the
+            # library rate is the rate for the section.
             assert prov["source"] and prov["source_date"] and prov["base_year"]
             assert prov["scope_inclusions"] and prov["scope_exclusions"]
             assert prov["confidence"]
+            assert "is_placeholder" not in prov
+            assert "replace_with" not in prov
 
 
 def test_benchmark_rejects_an_unknown_series(client_module, uploaded) -> None:
@@ -369,16 +374,18 @@ def test_benchmark_rate_library_exposes_full_provenance(client_module) -> None:
         assert row["currency"] == "SGD"
         assert row["provenance_note"]
         if row["is_placeholder"]:
-            # A retained estimate: at the old basis, with a named replacement.
-            assert row["replace_with"].startswith("# TODO:")
+            # A retained estimate: an older-base rate from a named source, stated as such.
             assert row["base_quarter"] == ""
+            assert "RETAINED ESTIMATE" in row["provenance_note"]
         else:
-            # Derived from the schedule of rates: expressed at a stated quarter, nothing
-            # to replace, and the provenance says how it was derived.
+            # Derived from the schedule of rates: expressed at a stated quarter, and the
+            # provenance says how it was derived.
             assert row["base_quarter"] == "2026Q2"
             assert row["base_year"] == 2026
-            assert row["replace_with"] == ""
             assert "DERIVED TO CURRENT" in row["provenance_note"]
+        # No row ships a "replace this with real data" instruction: the library rate is the rate
+        # for the section, whether it was derived from a schedule or retained from a source.
+        assert row["replace_with"] == ""
     # The preliminaries estimate is retained, not derived, at the user's request.
     assert any(r["smm2_section"] == "Preliminaries" and r["is_placeholder"] for r in rows)
 

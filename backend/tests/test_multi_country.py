@@ -192,9 +192,11 @@ def test_india_benchmark_base_rate_currency_is_inr(session) -> None:
         # Indian benchmark rates are three to five figures in rupees, never SGD-scale.
         assert line.benchmark_base_rate > 100
         prov = line.provenance
-        if prov["is_placeholder"]:
+        # The provenance names the source and the year it is expressed at. Which of the two the
+        # row is comes from the source itself, not from a placeholder flag.
+        assert prov["source"]
+        if "Retained" in prov["source"]:
             assert prov["base_year"] == 2023
-            assert "Retained" in prov["source"]
         else:
             assert prov["base_year"] == 2026
             assert "DSR" in prov["source"] or "Schedule of Rates" in prov["source"]
@@ -284,13 +286,15 @@ def test_benchmark_rates_endpoint_is_country_scoped(client_module) -> None:
     assert {r["classification_standard"] for r in india} == {"IS 1200 / CPWD DSR"}
     for row in india:
         assert row["currency"] == "INR"
+        # No benchmark rate row ships a "replace this with real data" instruction, whether it was
+        # derived from the DSR extract or retained from an older base.
+        assert row["replace_with"] == ""
         if row["is_placeholder"]:
             assert row["base_year"] == 2023
-            assert row["replace_with"].startswith("# TODO:")
+            assert "RETAINED ESTIMATE" in row["provenance_note"]
         else:
             assert row["base_year"] == 2026
             assert row["base_quarter"] == "2026Q2"
-            assert row["replace_with"] == ""
 
 
 def test_unknown_country_is_rejected(client_module) -> None:

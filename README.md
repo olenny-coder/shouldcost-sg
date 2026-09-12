@@ -123,8 +123,8 @@ Every row in the database declares which of two things it is. There is no third 
 
 | | `is_placeholder` | Carries | Meaning |
 |---|---|---|---|
-| **Real** | `false` | `provenance_note` | An actual published observation. The note names the publisher, the series and any transformation. |
-| **Synthetic** | `true` | `replace_with` | A stand-in. The marker names the exact value that must replace it. |
+| **Real** | `false` | `provenance_note` | An actual published observation, or a rate derived from one. The note names the publisher, the series and any transformation. |
+| **Retained** | `true` | `provenance_note` | A value carried from an older base, from a named source, for scope the loaded extracts do not reach - and, for the index seed quarters, a modelled value standing in for a licensed release. |
 
 Current split in the bundled seed data:
 
@@ -181,9 +181,9 @@ canonical section, and `make verify-seed` re-derives all eleven from the publish
 *Vol-II* (chapters 13-26), so earthwork, concrete, reinforcement and formwork - which live in Vol-I -
 are not in it; the Singapore file carries no piling and no M&E; and neither carries a
 general-requirements schedule. Those nine rows keep a **retained estimate**, each carrying
-`is_placeholder: true`, a `source_url` and a `# TODO: replace with actual <source> <period>`
-marker. The **preliminaries estimate is retained in both markets at the user's instruction**, so the
-section is never silently dropped. The app labels derived and retained separately on every screen.
+`is_placeholder: true` internally and a `provenance_note` naming the source and why the extract does
+not reach it. The **preliminaries estimate is retained in both markets at the user's instruction**, so
+the section is never silently dropped. The app labels derived and retained separately on every screen.
 
 ### Refreshing with real data
 
@@ -570,9 +570,10 @@ Deviations from the originally agreed column sets, each deliberate:
   silently assuming 100.
 * **`classification_standard`** on `benchmark_rates`, so a row declares whether its section comes
   from SMM2 or from IS 1200 / CPWD DSR.
-* **`source_url`, `is_placeholder` and `replace_with`**, required by hard rule 1: every synthetic
-  value must be traceable to the source it stands in for and the marker that must replace it, and
-  that traceability has to survive all the way into the UI.
+* **`source_url`, `is_placeholder` and `replace_with`**, required by hard rule 1: every value must be
+  traceable to the source it came from, and where a value is a stand-in for a licensed release it
+  must say which one. Provenance and basis are what the UI reads out; the `is_placeholder` boolean is
+  an internal distinction (derived versus retained) and is never printed as a flag to the analyst.
 
 The column is still called `smm2_section` even though India does not use SMM2. Both standards
 partition building work into the same ten sections, and the name is retained for API backward
@@ -580,7 +581,7 @@ compatibility; `classification_standard` carries the truth.
 
 ---
 
-## Seed data: published observations, derived figures, indicative seeds
+## Seed data: published observations, derived figures, retained estimates
 
 Every seeded row declares which of the three things it is, and the split is stated here rather than
 implied. The API carries one boolean for it - `is_placeholder` - because that is what the row-level
@@ -591,14 +592,24 @@ genuinely different situations that deserve different labels:
 |---|---|---|---|
 | **Published** | `is_placeholder: false` | the number is printed in the named publication | *published* |
 | **Derived** | computed at run time | the engine computed it from published values - most often by carrying a stale index forward along the published trend of a price index | *derived to date* / *basis: assumed* |
-| **Indicative seed** | `is_placeholder: true` | a stand-in value modelled on the published trend, because the document behind it is licensed rather than public | *indicative seed* |
+| **Retained estimate** | `is_placeholder: true` | a rate or index value carried from an older base, from a named source, for scope the loaded extracts do not reach | *retained* |
 
-**Indicative seed rows** (the construction cost index quarters for BCA/HDB/RLB/AECOM/CPWD/NBO, the
-benchmark rate library and the regional multipliers) carry:
+**The rate library is not a placeholder.** Its section rates are derived from the published schedules
+of rates (BCA SOR May 2022, CPWD DSR 2021 Vol-II) escalated by CPI to the quarter the library is
+stated at - a sourced, derived figure, labelled `basis: derived`, which is the rate the app benchmarks
+against. The nine **retained estimates** are the sections those extracts do not reach (BCA piling and
+M&E, DSR Vol-I earthwork, concrete, reinforcement, formwork and masonry, and preliminaries in both
+markets); each names its source and, where it needs one, the index that carries it. Neither kind
+carries a `# TODO` telling the analyst to come back with a licensed document: the library as loaded
+*is* the app's rate basis, and the disclosure that matters - source, quarter, and measured/derived/
+assumed - is on every row.
 
-* `is_placeholder: true`
-* a `source_url` naming the real publication it stands in for
-* a `replace_with` string beginning `# TODO: replace with actual <source> <period>`
+**Index seed rows** (the construction cost index quarters for BCA/HDB/RLB/AECOM/CPWD/NBO) are the one
+place where a synthetic stand-in remained: those quarterly index values are modelled on the published
+trend rather than transcribed from a release, so they keep `is_placeholder: true`, a `source_url`
+naming the publication they stand in for, and a `replace_with` marker naming the value that should
+replace them. They are index inputs, not rates, and the app's own bridge is what turns them into the
+movement it uses.
 
 **Published rows** (the India WPI quarters, all material prices, the monthly producer price indexes
 and the monthly CPI) carry `is_placeholder: false` and a `provenance_note` naming the publisher, the
@@ -787,7 +798,7 @@ Either way the line is:
 
 * reported with `basis: "assumed"` and flagged `manual_rate`,
 * given `from_library: false` so it is never confused with a published rate,
-* recorded with `source: "Analyst-supplied manual rate"` and the analyst's note in `replace_with`,
+* recorded with `source: "Analyst-supplied manual rate"` and the analyst's note in the provenance,
 * named in a warning stating how many lines were priced this way, and
 * counted in the report as `adjustment / manual_rate_count`.
 
@@ -836,9 +847,15 @@ the committed catalogue of every item in both schedules:
 | `published_uom` | the unit the schedule itself printed, verbatim. Kept beside `UOM` so a conversion is visible instead of implied |
 | `uom_note` | blank when the two agree, otherwise it says what happened: `converted from the schedule's 'sqm' to the app's 'm2', and the rate was converted with it`, or `NOT COMPARABLE: ...`, or `NO UOM: ...` |
 | `quantity` | **zero**. A schedule of rates has no quantities; an untouched template therefore totals zero on purpose |
-| `rate` | the schedule's rate escalated to 2026Q2 by CPI, so a filled quantity analyses straight away. Every row says it is a schedule rate, not a tendered one |
+| `rate` | the library rate for the section: the published schedule rate escalated to 2026Q2 by CPI, so a filled quantity analyses straight away. Source and quarter are on the row's neighbours (`source`/`base_quarter` in the library, the instructions sheet here); an analyst with tendered prices overwrites it |
 | `currency` | **`SGD` or `INR` on every row**, so no rate can be read as the other market's money |
-| `is_placeholder`, `replace_with` | the provenance markers hard rule 1 requires: what the row is, and what must replace it |
+
+**No placeholder flag, and no TODO column.** The rate in the sheet *is* the rate the app benchmarks
+that section against, derived from a named published schedule and stated at a named quarter, so the
+sheet does not ask the analyst to replace it with something more real: `is_placeholder` and
+`replace_with` are not columns. An earlier revision marked every row `is_placeholder = true` with a
+`# TODO: replace with your own rate`, which contradicted the sheet's own rate and made a complete
+library look provisional.
 
 **The unit is stated, not implied.** A rate without its unit is not a rate, and the schedules write
 their units their own way - `sqm`, `cum`, `kg`, `per metre span`, `litre`, `hour`. Every row therefore
@@ -862,7 +879,7 @@ carries the same legend (`m`, `m2`, `m3`, `t`, `item` with their accepted spelli
 total. An earlier revision dropped the rows it could not price, which silently removed 60 Singapore
 items (no published rate) and 30 India items (a unit the app cannot compare) from a list whose whole
 purpose is completeness. Those rows are now kept and flagged per row instead: a missing rate writes a
-zero with its own TODO, and an unconvertible unit is carried verbatim - `litre`, `hour`, "per metre
+zero, and an unconvertible unit is carried verbatim - `litre`, `hour`, "per metre
 span" - so the analyst can see what the schedule said and re-measure. Only a row with no description
 at all is dropped, and the count is printed.
 
@@ -972,8 +989,10 @@ the fact per section (`12 line(s) · 9 from the schedule of rates`), with each l
 
 The benchmark response contains `lines[]`, `sections[]`, `totals`, `waterfall[]`, `warnings[]` and
 `assumptions[]`. Every line carries the full benchmark provenance (`source`, `source_date`,
-`base_year`, `scope_inclusions`, `scope_exclusions`, `confidence`, `is_placeholder`, `source_url`,
-`replace_with`) plus the index actually applied.
+`base_year`, `scope_inclusions`, `scope_exclusions`, `confidence`, `source_url`) plus the index
+actually applied. Provenance names where the rate came from; the line's `basis` (measured, derived or
+assumed) says what kind of figure it is. The response ships no placeholder flag and no
+`replace_with` instruction.
 
 ### Waterfall reconciliation
 
@@ -1157,7 +1176,7 @@ Collapsing is never silent - each keeps a summary strip on screen:
   never a tooltip, but you are no longer made to scroll past the same warnings on every re-run). One
   **Collapse / Expand** control folds the body away and the choice is remembered in `localStorage`;
   the header keeps the live counts ("6 warning(s), 7 assumption(s)") and the amber chips for
-  *lines on an indicative seed rate*, *index carried forward with PPI* and *index adjusters active*,
+  *index carried forward with PPI* and *index adjusters active*,
   with a one-click link back to the full text. The **Warnings** and **Assumptions** lists also collapse independently.
 * the **Classification rules** table (the effective rule table for the selected market). Collapsed,
   it still shows the measurement standard, the rule count and an
@@ -1230,7 +1249,7 @@ available.
 | `tests/test_classifier.py` | 31 | every SG keyword family, case-insensitivity, unclassified handling, rule-order caveat |
 | `tests/test_benchmark.py` | 28 | index up, index down, scope_factor != 1.0 with Piling present, missing-quarter fallback, unclassified handling, unit mismatch, reconciliation, provenance completeness |
 | `tests/test_api.py` | 29 | upload/classify/patch, benchmark reconciliation within 0.01, threshold breaches, RLB scope warning, export bytes, health check, CORS posture, index endpoints |
-| `tests/test_multi_country.py` | 34 | market registry and credible sources, India vocabulary, WPI behaviour, per-market index isolation, INR amounts, country-scoped endpoints, **real rows carry provenance and placeholders carry a TODO** |
+| `tests/test_multi_country.py` | 34 | market registry and credible sources, India vocabulary, WPI behaviour, per-market index isolation, INR amounts, country-scoped endpoints, **every row carries provenance and no benchmark rate ships a placeholder flag or a TODO** |
 | `tests/test_adjustments_sensitivity.py` | 33 | every adjuster, override/scale composition, per-section isolation, basis and assumption disclosure, sweep monotonicity, break-even, tornado ranking, validation limits, template round-trip, all four export levels |
 | `tests/test_regions_report_import.py` | 26 | region defaults and errors, linearity of the multiplier, basis/assumption disclosure, region through sensitivity, all nine report blocks, report reconciliation, **importer provenance enforcement and idempotency**, and spot-checks of the real WPI values against the published series |
 | `tests/test_manual_rates.py` | 20 | coverage gap is real and closes to 100%, manual rates are tagged assumed and never from the library, indexed vs stated-at-tender behaviour, region applies only to indexed rates, scope exclusions still win, unusable rates ignored, reconciliation holds, sensitivity carries them, and the report counts them |
@@ -1556,7 +1575,7 @@ Each of these is a deliberate choice, not an oversight.
     through a browser button is not a workflow anybody wants; it is not offered in the UI, where two
     template buttons were just a choice between the same file with and without its instructions.
 26. **Every schedule description is listed, including the ones the app cannot price in one go.**
-    Missing rates become a zero with their own TODO, and a unit the app cannot compare (`litre`,
+    Missing rates become a zero, and a unit the app cannot compare (`litre`,
     `hour`, "per metre span") is carried verbatim and flagged so the row is reported as a unit
     mismatch rather than dropped. Dropping them made the template shorter than the schedule it claims
     to be - 60 Singapore and 30 India items - which is exactly the kind of quiet omission this app
@@ -1586,17 +1605,32 @@ Each of these is a deliberate choice, not an oversight.
     is honoured, and the rate-basis line switches to `DERIVED - RATE ESCALATED FROM THE LIBRARY` so the
     extra modelled step is visible on the face of the panel.
 
+31. **The rate library carries no placeholder flag and no TODO, and the template no longer asks the
+    analyst to replace its rates.** An earlier revision marked every template row `is_placeholder =
+    true` with a `# TODO: replace with your own rate`, and warned on every run that some lines were
+    "priced from a retained estimate ... do not use for a real tender decision". That was wrong twice
+    over: the rate in the sheet *is* the library rate for the section - the published schedule rate
+    escalated to the library quarter, from a named source, at a stated quarter - and a warning that
+    fires on every run is a warning nobody reads. What remains is the part that carries information:
+    the source, the quarter, the unit and the currency on every row, and the `basis` label
+    (measured / derived / assumed) on every figure. The nine retained estimates keep their
+    `is_placeholder` boolean internally so the UI can distinguish a retained rate from an SOR-derived
+    one, but nothing in the app, the API payload, the export or the template reads out as
+    "placeholder", "indicative seed" or a TODO.
+
 ---
 
 ## Limitations - what this is not
 
-* **Not usable for a real tender decision as shipped.** The monthly **producer** price indexes, the
+* **Not audited for a real tender decision as shipped.** The monthly **producer** price indexes, the
   monthly **consumer** price indexes, the India WPI quarters and the material price series are real
-  published data. What is neither published nor licensed is the **benchmark rate library** and the
-  **regional multipliers** - the CPWD DSR, the state PWD schedules and BCA Construction InfoNet are
-  licensed publications - so those rows are **indicative seed values** carrying `is_placeholder: true`,
-  a source URL and a TODO. On top of that, a carried-forward index is a **derived** figure rather than
-  an observation. The UI labels published, derived and indicative separately on every screen.
+  published data. The **benchmark rate library** is derived from the published schedules of rates
+  (BCA SOR May 2022 and CPWD DSR 2021 Vol-II) escalated by CPI to 2026Q2, with nine sections carried
+  as retained estimates from an older base where those extracts do not reach; the **regional
+  multipliers** are modelled locational adjustments. On top of that, a carried-forward index is a
+  **derived** figure rather than an observation. The UI labels published, derived, retained and
+  assumed separately on every screen, and every rate names its source - which is what a reader needs
+  in order to judge it, rather than a flag telling them the number is provisional.
 * **The index bridge is not a construction cost forecast.** It carries an index to the tender quarter
   along the movement in a producer - or, failing that, consumer - price index, because those are the
   only current official series published monthly for both markets. Even a producer basket prices only

@@ -19,12 +19,12 @@ WHAT THE ANALYST GETS
   quantity      ZERO. A schedule of rates has no quantities; only a bill does. An
                 untouched template therefore totals zero and cannot be mistaken for a
                 priced bill
-  rate          the schedule's rate escalated to 2026 by CPI, so a filled quantity
-                analyses immediately. It is a SCHEDULE rate, not a tendered rate, and
-                every row says so in replace_with
-  is_placeholder, replace_with
-                the provenance markers hard rule 1 requires: what this row is, and what
-                must replace it before the figure is used for a real decision
+  rate          the schedule's rate escalated to the quarter the library is stated at, so a
+                filled quantity analyses immediately. It is the same rate the library prices
+                that section with, from a stated source and at a stated quarter - so the sheet
+                carries no placeholder flag and no "replace with real data" column. An analyst
+                with tendered prices overwrites `rate`; one without can price with the library
+                as it stands.
 
 EVERY SCHEDULE DESCRIPTION IS LISTED
 ------------------------------------
@@ -67,7 +67,6 @@ HEADERS = [
     # and flags the rows the app cannot compare at all.
     "UOM", "published_uom", "uom_note",
     "quantity", "rate", "currency",
-    "is_placeholder", "replace_with",
 ]
 
 # The five UOMs the app compares, what each means, and the published spellings each one
@@ -82,19 +81,11 @@ UOM_LEGEND: tuple[tuple[str, str, str], ...] = (
 
 CATALOGUE = Path(__file__).resolve().parent.parent / "data" / "sor_items.csv"
 
-RATE_TODO = (
-    "# TODO: the rate is the SCHEDULE rate escalated to 2026 by CPI, not a tendered rate. "
-    "Replace it with your own, and set quantity, before reading the variance."
-)
-NO_RATE_TODO = (
-    "# TODO: the published schedule carries no rate for this item. Supply your own tendered "
-    "rate and set quantity; until you do, this row is a description with no price."
-)
-UNIT_TODO = (
-    "# TODO: the schedule measures this item in a unit the app cannot compare (see UOM and "
-    "uom_note). Re-measure it in m, m2, m3, t or item, or supply a manual rate in the app's "
-    "Coverage panel; otherwise the line is reported as a unit mismatch."
-)
+# The rate this template pre-fills IS the rate library for the section: the published schedule
+# rate escalated to the library quarter. It is a real, sourced rate, so the sheet does not
+# carry a placeholder flag or a "replace this with real data" column - an analyst who has
+# tendered prices overwrites `rate`, and one who does not can price with the library as it
+# stands.
 
 
 @dataclass(frozen=True)
@@ -238,14 +229,6 @@ def catalogue_totals(country_code: str) -> dict:
 # --------------------------------------------------------------------------- #
 # The template itself
 # --------------------------------------------------------------------------- #
-def _todo_for(item: SorItem) -> str:
-    if not item.unit_comparable:
-        return UNIT_TODO
-    if item.rate is None:
-        return NO_RATE_TODO
-    return RATE_TODO
-
-
 def _uom_note(item: SorItem) -> str:
     """Say, per row, what the UOM is and where it came from."""
     if not item.published_unit.strip() and not item.unit.strip():
@@ -282,8 +265,6 @@ def _item_rows(country: Country) -> list[list]:
                 0,                                    # quantity: the analyst's to set
                 item.rate if item.rate is not None else 0,
                 item.currency or country.currency,    # stated per row, not implied
-                "true",
-                _todo_for(item),
             ]
         )
     return rows
@@ -319,10 +300,11 @@ def _instructions(country: Country, library_quarter: str) -> list[list[str]]:
                f"joinery, finishes, demolition, repairs) and are reported as needing a manual rate."],
         ["3", "Set quantity on the rows you keep. Every row starts at 0, so an untouched file totals "
               "zero on purpose and cannot be mistaken for a priced bill."],
-        ["4", "Replace rate with YOUR tendered rate. It is pre-filled with the SCHEDULE rate so the "
-              "file analyses straight away - see WHERE THE RATES COME FROM below, because a schedule "
-              "rate is not a tender - and every row is marked is_placeholder = true until you "
-              "replace it. Rows whose item has no published rate start at 0 and say so."],
+        ["4", "Replace rate with YOUR tendered rate if you have one. It is pre-filled with the "
+              "library rate for the section - the published schedule rate escalated to the quarter "
+              "this library is stated at, which is the same figure the app benchmarks against (see "
+              "WHERE THE RATES COME FROM below and CURRENCY AND THE QUARTER). Rows whose item has no "
+              "published rate start at 0."],
         ["5", "To add a line that is NOT in the schedule, leave sor_code blank. The app reports those "
               "lines separately: the schedule has no rate for them, so they need a manual rate before "
               "the should-cost is complete."],
@@ -330,7 +312,7 @@ def _instructions(country: Country, library_quarter: str) -> list[list[str]]:
               "if it differs - the schedule wording classifies accurately because the rules were "
               "tuned on it, and anything the classifier cannot place is flagged Unclassified for you "
               "to reclassify."],
-        ["7", "Check the unit column. The schedule measures a few items in units the app does not "
+        ["7", "Check the UOM column. The schedule measures a few items in units the app does not "
               "compare (litre, hour, per metre span); those rows keep the published unit and are "
               "reported as a unit mismatch, not silently dropped. Re-measure them or supply a manual "
               "rate."],
@@ -370,10 +352,10 @@ def _instructions(country: Country, library_quarter: str) -> list[list[str]]:
         *[["", source] for source in sources],
         ["", "Singapore: BCA Schedule of Rates May 2022 x 1.171 (cumulative CPI 2022 to 2026)."],
         ["", "India: CPWD Delhi Schedule of Rates 2021 Vol-II x 1.2364 (cumulative CPI 2021 to 2026)."],
-        ["", "Both extracts state the same caveat, which applies here: this is an estimate - "
-             "validate it with current market quotations and construction-specific indices. The "
-             "escalation is the same technique the app uses to carry a stale index forward to the "
-             "tender quarter, and it is disclosed for the same reason."],
+        ["", "That escalation is the rate basis for this market: the same technique the app uses to "
+             "carry a stale index forward to the tender quarter. It is a derived rate from a stated "
+             "source rather than a tendered one, which is what the app labels basis = derived when it "
+             "prices a line with it - and why every line's detail names the source it came from."],
         ["", ""],
         ["SECTIONS SUMMARY - WHAT THIS MARKET'S SCHEDULE HOLDS", ""],
         ["section", "schedule items / with a published rate / comparable unit"],
@@ -392,14 +374,20 @@ def _instructions(country: Country, library_quarter: str) -> list[list[str]]:
         ["section", "The app's classification of this description, supplied so you can filter. BLANK "
                     "means the item is outside the library's ten sections and cannot be benchmarked "
                     "without a manual rate. Ignored on upload - the app reclassifies."],
-        ["unit", "One of m, m2, m3, t, item. The unit must match the benchmark rate's unit or the "
-                 "line is excluded from variance testing."],
+        ["UOM", "One of m, m2, m3, t, item: the unit the rate and the quantity are per. It must "
+                "match the benchmark rate's unit or the line is excluded from variance testing. "
+                "The parser also accepts unit, units and uom."],
+        ["published_uom", "What the schedule of rates itself measured for this item, kept verbatim "
+                          "so a conversion is visible."],
+        ["uom_note", "Explains the conversion, says NOT COMPARABLE when the app cannot compare the "
+                     "schedule's unit, or says NO UOM when the schedule states no unit at all."],
         ["quantity", "Measured quantity. Zero in the template - you must set it."],
-        ["rate", f"Tendered rate per unit, in {country.currency}. Pre-filled with the escalated "
-                 f"schedule rate; replace it with your own."],
-        ["is_placeholder", "true when the row is not a real tendered line. Leave it true until you "
-                           "have replaced the rate and quantity."],
-        ["replace_with", "What must replace this row before it is used for a real decision."],
+        ["rate", f"Rate per unit, in {country.currency}. Pre-filled with the library rate for the "
+                 f"section (the published schedule rate escalated to the library quarter); overwrite "
+                 f"it with your own tendered rate if you have one."],
+        ["currency", f"{country.currency} on every row, so a sheet lifted out of context still says "
+                     f"which currency its rates are in. Ignored on upload: the market you upload to "
+                     f"sets the currency."],
         ["", ""],
         ["SHOULD-COST COMPLETENESS", ""],
         ["", "A complete should-cost needs a rate for every line. Lines the library cannot price are "
@@ -450,8 +438,6 @@ def template_xlsx_bytes(country_code: str, library_quarter: str = "") -> bytes:
             ("G", 10),   # quantity
             ("H", 12),   # rate
             ("I", 10),   # currency
-            ("J", 14),   # is_placeholder
-            ("K", 70),   # replace_with
         ):
             sheet.column_dimensions[column].width = width
     buffer.seek(0)

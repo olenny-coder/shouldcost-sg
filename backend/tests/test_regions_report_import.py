@@ -117,10 +117,15 @@ def test_the_region_is_disclosed_in_the_assumptions(session) -> None:
     assert result.region_name == "Mumbai"
 
 
-def test_a_placeholder_region_factor_raises_a_warning(session) -> None:
+def test_a_modelled_region_factor_raises_a_warning(session) -> None:
     result = _run(session, region="MUM")
     assert result.regional_factor_is_placeholder is True
-    assert any("INDICATIVE estimate" in w for w in result.warnings)
+    warning = [w for w in result.warnings if "Regional adjustment" in w][0]
+    assert "modelled" in warning
+    assert "Source:" in warning
+    # It states what the multiplier is and where it came from, not that it is a placeholder.
+    assert "INDICATIVE" not in warning
+    assert "TODO" not in warning
 
 
 def test_the_delhi_region_does_not_mark_lines_assumed(session) -> None:
@@ -244,15 +249,18 @@ def test_report_reconciles_and_carries_provenance(client_module, session) -> Non
     # Every benchmarked line carries the benchmark provenance.
     line_rows = [r for r in rows if r["block"] == "line"]
     assert any(r["item"] == "benchmark_source" for r in line_rows)
-    assert any(r["item"] == "benchmark_is_placeholder" for r in line_rows)
+    assert any(r["item"] == "benchmark_base_year" for r in line_rows)
     assert any(r["item"] == "regional_factor" for r in line_rows)
+    # The report states provenance, not a placeholder flag or a "replace this" TODO.
+    assert not any("is_placeholder" in r["item"] for r in line_rows)
+    assert not any("replace_with" in r["item"] for r in line_rows)
 
 
 def test_report_contains_warnings_assumptions_and_sources(client_module, session) -> None:
     rows = _report(client_module, _upload_id(session, IN_SAMPLE))
     assumptions = [r["value"] for r in rows if r["block"] == "assumption"]
     assert any("Regional" in a or "1.128" in a for a in assumptions)
-    assert any("INDICATIVE" in a and "trend to date" in a for a in assumptions)
+    assert any("derived" in a and "source it came from" in a for a in assumptions)
     assert [r for r in rows if r["block"] == "warning"]
     sources = {r["ref"] for r in rows if r["block"] == "source"}
     assert any("Wholesale Price Index" in s for s in sources)

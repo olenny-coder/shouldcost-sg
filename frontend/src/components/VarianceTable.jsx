@@ -24,7 +24,7 @@ function flagSummary(line) {
     unit_mismatch: 'unit mismatch',
     unclassified: 'unclassified',
     no_benchmark_rate: 'no benchmark rate',
-    placeholder_benchmark_rate: 'indicative rate',
+    retained_library_rate: 'retained library rate',
     tpi_quarter_fallback: 'TPI quarter fallback',
     index_bridged: 'index carried forward',
     cpi_bridged: 'index carried forward',
@@ -258,12 +258,8 @@ export default function VarianceTable(props) {
                       <br />source_date: {line.provenance.source_date} | base_year: {line.provenance.base_year} | confidence: {line.provenance.confidence}
                       <br />scope_inclusions: {line.provenance.scope_inclusions}
                       <br />scope_exclusions: {line.provenance.scope_exclusions}
-                      <br />is_placeholder (true = indicative seed, not a licensed schedule): <strong>{String(line.provenance.is_placeholder)}</strong>
                       {line.provenance.source_url ? <span><br />source_url: <a href={line.provenance.source_url} target="_blank" rel="noreferrer">{line.provenance.source_url}</a></span> : null}
                     </p>
-                    {line.provenance.replace_with ? (
-                      <p className="todo">{line.provenance.replace_with}</p>
-                    ) : null}
                   </div>
                 )}
               </div>

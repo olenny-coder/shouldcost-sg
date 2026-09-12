@@ -86,7 +86,10 @@ def test_a_manual_rate_is_an_assumption_not_a_measurement(session) -> None:
             assert line.exclusion_reason is None
             assert line.provenance["source"] == "Analyst-supplied manual rate"
             assert line.provenance["confidence"] == "analyst"
-            assert line.provenance["is_placeholder"] is False
+            # Provenance states where the rate came from; there is no placeholder flag and no
+            # "replace this" instruction shipped with the line.
+            assert "is_placeholder" not in line.provenance
+            assert "replace_with" not in line.provenance
         elif line.is_benchmarked:
             assert line.from_library is True
 

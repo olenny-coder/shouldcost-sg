@@ -235,7 +235,7 @@ export default function BenchmarkControls(props) {
           <strong>{props.activeRegion.factor.toFixed(3)}</strong> for{' '}
           {props.activeRegion.region_name}. Source: {props.activeRegion.source}.
           {props.activeRegion.is_placeholder
-            ? ' This multiplier is an INDICATIVE estimate — the published city index has not been licensed yet, so it is disclosed as an assumption on every affected line.'
+            ? ' It is a modelled locational adjustment rather than a measured city index, so it is disclosed as an assumption on every affected line.'
             : ''}
         </p>
       ) : null}

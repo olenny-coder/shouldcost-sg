@@ -354,15 +354,13 @@ def test_every_benchmarked_line_carries_full_provenance(session, sample_upload_i
         assert p is not None
         for field in (
             "source", "source_date", "base_year", "scope_inclusions",
-            "scope_exclusions", "confidence", "is_placeholder",
+            "scope_exclusions", "confidence",
         ):
             assert p[field] not in (None, ""), f"{field} missing on line {line.item_id}"
-        # A rate derived from a published schedule of rates is NOT indicative, and has
-        # nothing to replace. A retained estimate is, and must say what to replace it with.
-        if p["is_placeholder"]:
-            assert p["replace_with"].startswith("# TODO:")
-        else:
-            assert p["replace_with"] == ""
+        # Provenance names where the rate came from. It no longer ships a placeholder flag or a
+        # "replace this with real data" TODO: the library rate IS the rate for the section.
+        assert "replace_with" not in p
+        assert "is_placeholder" not in p
 
 
 def test_tpi_up_and_down_move_variance_in_opposite_directions(session, sample_upload_id, deflationary_series) -> None:
