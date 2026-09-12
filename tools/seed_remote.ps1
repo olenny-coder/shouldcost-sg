@@ -16,7 +16,8 @@
 param(
     [string]$DatabaseUrl,
     [string]$ApiBase = 'https://shouldcost-backend-7qnj.onrender.com',
-    [switch]$SkipVerify
+    [switch]$SkipVerify,
+    [switch]$KeepPooled
 )
 
 $ErrorActionPreference = 'Stop'
@@ -63,8 +64,18 @@ if ($DatabaseUrl -match '\s') {
 if ($DatabaseUrl -notmatch '^postgres(ql)?://') {
     throw "That does not look like a PostgreSQL URL (it must start with postgres:// or postgresql://). Got: $($DatabaseUrl.Substring(0, [Math]::Min(40, $DatabaseUrl.Length)))..."
 }
-if ($DatabaseUrl -match '-pooler\.') {
-    Write-Host 'WARNING: this looks like the pooled (-pooler) endpoint. The direct URL is recommended for a long-running Render service.' -ForegroundColor Yellow
+# Neon's Connect panel hands out the POOLED host by default, which is the wrong one for a
+# long-running ETL. The direct host is the same name without "-pooler", so switch it rather
+# than warning about it: a warning here means the operator has to go back to the dashboard and
+# copy the right string, which is exactly the step that goes wrong.
+if (($DatabaseUrl -match '-pooler\.') -and -not $KeepPooled) {
+    [uri]$pooled = $null
+    if ([uri]::TryCreate($DatabaseUrl, [UriKind]::Absolute, [ref]$pooled)) {
+        $directHost = $pooled.Host -replace '-pooler\.', '.'
+        $DatabaseUrl = $DatabaseUrl -replace [regex]::Escape($pooled.Host), $directHost
+        Write-Host "Switched the pooled endpoint to the direct one: $directHost" -ForegroundColor Yellow
+        Write-Host '(Neon serves an ETL better on the direct host. Pass -KeepPooled to stay on the pooled one.)' -ForegroundColor DarkGray
+    }
 }
 
 [uri]$parsed = $null
