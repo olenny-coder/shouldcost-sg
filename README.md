@@ -86,7 +86,7 @@ git clone <your-repo> shouldcost-sg && cd shouldcost-sg
 
 make install     # pip install -r backend/requirements.txt  +  npm install in frontend/
 make seed        # python -m app.etl   (idempotent - safe to run repeatedly)
-make test        # pytest, 356 tests
+make test        # pytest, 361 tests
 
 # optional, if you have refreshed the publisher downloads in ../.realdata/:
 python tools/verify_seed_data.py   # re-derives every seeded value from its source
@@ -1208,15 +1208,48 @@ Light blue throughout: a gradient page background, white cards at 20px radius, s
 pill-shaped tabs, chips and badges, and rounded inputs. Colours are driven by CSS custom properties
 at the top of `styles.css`, so the whole palette can be re-themed in one place.
 
-Mobile behaviour is verified in a real browser rather than asserted:
+**Navigation collapses to a hamburger below 901px.** The six views are a horizontal pill row on a
+desktop and a panel behind a toggle in a sticky app bar on a phone, because six pills at 360px either
+scroll off screen or shrink below a tap target. The toggle carries `aria-expanded` and
+`aria-controls`; the panel closes on a view choice, on Escape, on a backdrop tap, and on growing the
+window past the breakpoint (so an open state cannot outlive the panel's reason to exist). The panel is
+`position: fixed` under the sticky bar, so opening it after scrolling 1,800 rows puts it where the
+thumb is, and every item is a 46px tap target. The market and API status line sits in the panel on a
+phone, where the header has no room for it, and is hidden on a desktop where the header pills show it.
+
+**Nothing pushes the page sideways.** Several things conspired to make text overrun on a narrow
+screen, and each is fixed at the cause rather than hidden:
+
+* grid and flex children get `min-width: 0`, so one unbreakable string - a schedule code, a source
+  URL, a supplier's raw description - cannot widen its panel past the viewport;
+* text-bearing containers wrap (`overflow-wrap: break-word`), and codes, URLs and `code` spans break
+  anywhere;
+* table headers wrap on a phone instead of forcing a `min-width` (a header that cannot wrap is a
+  header that widens the table);
+* every wide table sits in `.table-scroll`, which scrolls inside its own box with an inset right-edge
+  shadow as the only affordance - the Waterfall reconciliation table was the one table outside a
+  scroller, and it dragged the whole page to 747px on a 320px phone until it was wrapped;
+* badges, flags and section pills stop being `nowrap` on a phone, so a long section name wraps rather
+  than running off the card.
+
+Mobile behaviour is verified in a real browser rather than asserted, at six widths, over all six
+views, with two measurements per view: the document may not be wider than the **viewport** (not
+`window.innerWidth`, which silently widens with the content under emulation and would report a
+320px phone that scrolls sideways as a pass), and no text may be clipped inside a box it cannot
+scroll (`scrollWidth > clientWidth` on a leaf with `overflow: visible`).
 
 | Width | Result |
 |---|---|
-| 1500px | full desktop layout, tiles in a grid, all tables visible |
-| 390px | page overflow **0px**; tabs scroll horizontally; wide tables scroll inside their own container so the page never side-scrolls; controls stack full width; tiles drop to one column for currency figures |
-| 360px | page overflow **0px** |
+| 1440px | full desktop layout: tab row visible, no hamburger, tiles in a grid, all tables visible |
+| 768px | hamburger navigation; every view fits; no clipped text |
+| 414px | ditto, market chips and controls stack full width |
+| 390px | ditto - page overflow **0px** on all six views |
+| 360px | ditto - page overflow **0px** on all six views |
+| 320px | ditto - the narrowest phone still renders every view without side-scrolling |
 
-`prefers-reduced-motion` is honoured.
+`prefers-reduced-motion` is honoured. The app bar is 61px tall at every phone width, so the fixed
+panel always lands directly under it, and the toggle drops its label below 400px to keep the bar on
+one line.
 
 The backend URL is read **exclusively** from `import.meta.env.VITE_API_BASE_URL` in
 `frontend/src/api.js`. `http://localhost:8000` appears exactly once, as the documented local-dev
@@ -1228,7 +1261,7 @@ Vercel requires a redeploy**.
 ## Testing
 
 ```
-cd backend && python -m pytest tests -v      # 356 tests
+cd backend && python -m pytest tests -v      # 361 tests
 
 # The same suite passes against real PostgreSQL - the engine production runs:
 docker compose up -d --build
@@ -1403,8 +1436,11 @@ DESKTOP - the upload view: one template, and a sections summary that names the s
                        "Excavation 4 line(s) · 3 from the schedule of rates · 1 not benchmarked";
                        lines flagged "schedule item III"
 
-MOBILE 390px   : page overflow 0px, tabs scrollable, tables contained, tiles single column
-MOBILE 360px   : page overflow 0px
+MOBILE 320/360/390/414px: hamburger shown, panel closed on load, opens on tap (6 tabs, 46px each),
+                       Escape and backdrop close it, choosing a view navigates and closes it,
+                       app bar 61px and one line; all six views: page overflow 0px, no clipped text
+TABLET 768px   : hamburger navigation, all six views fit, no clipped text
+DESKTOP 1440px : no hamburger, tab row visible with all six views
 CONSOLE ERRORS : 0
 ```
 

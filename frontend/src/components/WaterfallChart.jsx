@@ -269,6 +269,7 @@ export default function WaterfallChart(props) {
       </button>
 
       {showTable && (
+        <div className="table-scroll">
         <table className="data-table">
           <thead>
             <tr>
@@ -319,6 +320,7 @@ export default function WaterfallChart(props) {
             </tr>
           </tbody>
         </table>
+        </div>
       )}
 
       <p className="muted small">

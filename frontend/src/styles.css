@@ -152,9 +152,11 @@ body {
 }
 
 /* ------------------------------------------------------------------ tabs -- */
-.tabs {
-  display: flex; gap: 8px; margin-bottom: 16px; overflow-x: auto;
-  padding-bottom: 4px; -webkit-overflow-scrolling: touch; scrollbar-width: thin;
+/* The tab row IS the navigation. On a phone it collapses behind the hamburger in the app bar
+   above, because six pills at 360px either scroll off screen or shrink below a tap target. */
+.app-nav {
+  display: flex; gap: 8px; margin-bottom: 16px;
+  flex-wrap: wrap; align-items: center;
 }
 .tab {
   flex: 0 0 auto; border: 1px solid var(--line); background: var(--card); color: var(--ink-soft);
@@ -167,6 +169,28 @@ body {
   color: #fff; border-color: transparent; box-shadow: 0 4px 14px rgba(37, 99, 235, 0.28);
 }
 .spacer { flex: 1 1 auto; }
+/* The market/API line lives in the panel on a phone, where the header has no room for it. */
+.nav-status { display: none; }
+.nav-backdrop { display: none; }
+
+/* Mobile app bar: wordmark plus the navigation toggle. */
+.app-bar { display: none; }
+.nav-toggle {
+  display: inline-flex; align-items: center; gap: 9px;
+  min-height: 44px; padding: 0 14px;
+  background: var(--card); color: var(--blue-700);
+  border: 1px solid var(--blue-200); border-radius: var(--radius-sm);
+  font-size: 13px; font-weight: 700; cursor: pointer;
+}
+.nav-toggle.open { background: var(--blue-600); border-color: var(--blue-600); color: #fff; }
+.nav-bars { display: inline-block; width: 18px; }
+.nav-bars i {
+  display: block; height: 2px; border-radius: 2px; background: currentColor;
+  margin: 4px 0; transition: transform 0.18s ease, opacity 0.18s ease;
+}
+.nav-toggle.open .nav-bars i:nth-child(1) { transform: translateY(6px) rotate(45deg); }
+.nav-toggle.open .nav-bars i:nth-child(2) { opacity: 0; }
+.nav-toggle.open .nav-bars i:nth-child(3) { transform: translateY(-6px) rotate(-45deg); }
 
 /* --------------------------------------------------------------- uploads -- */
 .dropzone {
@@ -420,6 +444,23 @@ button.block-toggle .chev { font-size: 10px; }
 .row { display: flex; gap: 10px; flex-wrap: wrap; align-items: center; }
 .app-footer { margin-top: 22px; padding: 16px; border-radius: var(--radius); background: rgba(255,255,255,0.6); font-size: 12px; }
 
+/* -------------------------------------------------- nothing overruns the page -- */
+/* Grid and flex children default to min-width:auto, which means one long unbreakable string - a
+   schedule code, a source URL, a figure with no spaces - can widen a panel past the viewport and
+   give the whole page a horizontal scrollbar on a phone. Every container that holds text says
+   min-width:0, and the text itself is allowed to break rather than push. */
+.app, .panel, .notice, .tile, .assumptions-panel, .chart-card, .coverage-item,
+.detail-grid > *, .tile-grid > *, .adjuster, .control-row > *, .row > * { min-width: 0; }
+.panel p, .panel li, .panel td, .panel th, .notice, .help-list li, .coverage-detail,
+.assumptions-block li, .tile .tile-sub, .app-footer, .adjuster, .section-adjusters label {
+  overflow-wrap: break-word;
+}
+code, .mono, .coverage-detail a, .help-popout a, .panel a { overflow-wrap: anywhere; }
+/* Tabs, chips and buttons keep their own text on one line where they can, but never wider
+   than the space they are given. */
+.tab, .country-chip, .badge, .flag, .section-pill, .basis-chip, button { max-width: 100%; }
+svg, canvas, img { max-width: 100%; }
+
 /* ================================ mobile ================================= */
 @media (max-width: 900px) {
   .app { padding: 14px 12px 60px; }
@@ -432,25 +473,92 @@ button.block-toggle .chev { font-size: 10px; }
   .control-row label, .field, .control-row select, .control-row input { width: 100%; }
   .control-row button { width: 100%; }
   .detail-grid { grid-template-columns: 1fr; }
+
+  /* Sticky app bar, so the navigation is reachable down a 1,876-row view. */
+  .app-bar {
+    display: flex; align-items: center; justify-content: space-between; gap: 10px;
+    position: sticky; top: 0; z-index: 70;
+    margin: -14px -12px 12px; padding: 8px 12px;
+    background: rgba(240, 247, 255, 0.94);
+    backdrop-filter: blur(8px);
+    border-bottom: 1px solid var(--line);
+  }
+  .app-bar-brand { display: flex; align-items: center; gap: 8px; min-width: 0; }
+  .app-bar-name {
+    font-size: 15px; font-weight: 700; color: var(--blue-700); letter-spacing: -0.2px;
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  }
+  .app-bar .logo-bg { fill: rgba(37, 99, 235, 0.12); }
+  .app-bar .logo-baseline { stroke: rgba(37, 99, 235, 0.35); }
+  .app-bar .logo-curve { stroke: var(--blue-600); }
+  .app-bar .logo-dot-start, .app-bar .logo-dot-end { fill: var(--blue-600); }
+
+  /* The tab row becomes a panel pinned under the sticky bar - fixed, not absolute, so opening it
+     after scrolling still puts it where the thumb is rather than back at the top of the page. */
+  .app-nav {
+    display: none; flex-direction: column; align-items: stretch; gap: 6px;
+    position: fixed; top: 58px; left: 12px; right: 12px; z-index: 65;
+    margin: 0; padding: 10px;
+    max-height: calc(100vh - 74px); overflow-y: auto;
+    background: var(--card); border: 1px solid var(--line);
+    border-radius: var(--radius); box-shadow: var(--shadow-lg);
+  }
+  .app-nav.open { display: flex; }
+  .app-nav .tab {
+    width: 100%; min-height: 46px; border-radius: var(--radius-sm);
+    text-align: left; padding: 11px 14px; font-size: 14px; white-space: normal;
+  }
+  .app-nav .tab.active::after { content: ' \2713'; font-weight: 700; }
+  .nav-status {
+    display: block; margin-top: 4px; padding: 9px 4px 2px;
+    border-top: 1px dashed var(--blue-200);
+    font-size: 12px; color: var(--muted); overflow-wrap: anywhere;
+  }
+  .nav-backdrop {
+    display: block; position: fixed; inset: 0; z-index: 60;
+    background: rgba(15, 39, 68, 0.28);
+  }
 }
 
 @media (max-width: 600px) {
   body { font-size: 14px; }
   .app-header h1 { font-size: 20px; }
+  .app-header p { font-size: 12px; }
+  .header-status { font-size: 11px; }
+  .header-status .pill { white-space: normal; }
   .panel { padding: 14px; border-radius: var(--radius); }
-  .tile-grid { grid-template-columns: 1fr 1fr; }
+  .tile-grid { grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); }
   .tile { padding: 12px; border-radius: var(--radius); }
   .tile .tile-value { font-size: 17px; }
-  .tab { padding: 8px 13px; font-size: 12px; }
   .adjuster-grid { grid-template-columns: 1fr; }
   .section-adjusters { grid-template-columns: 1fr; }
   .data-table { font-size: 12px; }
   .data-table td.desc { min-width: 220px; }
   .dropzone { padding: 22px 12px; }
+  /* Wide tables stay readable: they scroll inside their own box instead of pushing the page.
+     The inset shadow on the right edge is the only affordance saying there is more to the right -
+     the alternative, letting the page itself scroll sideways, moves the whole layout. */
+  .table-scroll {
+    border-radius: var(--radius-sm);
+    box-shadow: inset -16px 0 14px -14px rgba(15, 39, 68, 0.28);
+  }
+  /* A header that cannot wrap is a header that widens the table: let it wrap, and the summary
+     tables fit a phone without swiping at all. */
+  .data-table th { white-space: normal; }
+  .data-table { min-width: 640px; }
+  .data-table.compact { font-size: 11.5px; }
+  .data-table.compact th, .data-table.compact td { padding: 5px 6px; }
+  /* A pill or badge that cannot wrap is a pill that runs off the screen. */
+  .badge, .flag, .section-pill { white-space: normal; }
+  .coverage-item > summary { padding: 10px; }
+  .assumptions-panel { padding: 14px; }
+  .app-footer { font-size: 11px; }
 }
 
 @media (max-width: 400px) {
   .tile-grid { grid-template-columns: 1fr; }
+  .nav-toggle-label { display: none; }
+  .nav-toggle { padding: 0 12px; }
 }
 
 /* ------------------------------------------------------- help pop-out ---- */

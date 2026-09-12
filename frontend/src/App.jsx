@@ -98,6 +98,8 @@ export default function App() {
   const [sensitivity, setSensitivity] = useState(null)
 
   const [tab, setTab] = useState('upload')
+  // The navigation panel, on a phone. Open by default would cover the view it navigates.
+  const [navOpen, setNavOpen] = useState(false)
   // The quarter the rate library is expressed at, so a fresh run opens on the library
   // as built. Every other quarter stays selectable and carries the index from here.
   const [tenderQuarter, setTenderQuarter] = useState('2026Q2')
@@ -272,6 +274,27 @@ export default function App() {
     return function () { cancelled = true }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [countryCode, countries.length])
+
+  // ------------------------------------------------------------- navigation --
+  // Escape closes the panel, and so does growing the window past the breakpoint where the tab
+  // row becomes visible again - otherwise the "open" state would outlive the panel's reason to
+  // exist and the next narrow render would open it behind the user's back.
+  useEffect(function () {
+    if (!navOpen) return undefined
+    function onKeyDown(event) {
+      if (event.key === 'Escape') setNavOpen(false)
+    }
+    const wide = window.matchMedia('(min-width: 901px)')
+    function onWide(event) {
+      if (event.matches) setNavOpen(false)
+    }
+    window.addEventListener('keydown', onKeyDown)
+    if (wide.addEventListener) wide.addEventListener('change', onWide)
+    return function () {
+      window.removeEventListener('keydown', onKeyDown)
+      if (wide.removeEventListener) wide.removeEventListener('change', onWide)
+    }
+  }, [navOpen])
 
   // ------------------------------------------------------- index freshness --
   // How current every index series is against the quarter being priced, and what
@@ -692,19 +715,51 @@ export default function App() {
         </div>
       ) : null}
 
-      <nav className="tabs">
+      <div className="app-bar">
+        <div className="app-bar-brand">
+          <Logo size={24} />
+          <span className="app-bar-name">shouldcost</span>
+        </div>
+        <button
+          type="button"
+          className={navOpen ? 'nav-toggle open' : 'nav-toggle'}
+          aria-label={navOpen ? 'Close navigation' : 'Open navigation'}
+          aria-expanded={navOpen}
+          aria-controls="app-nav"
+          onClick={function () { setNavOpen(function (open) { return !open }) }}
+        >
+          <span className="nav-bars" aria-hidden="true"><i /><i /><i /></span>
+          <span className="nav-toggle-label">{navOpen ? 'Close' : 'Menu'}</span>
+        </button>
+      </div>
+
+      {navOpen ? (
+        <div className="nav-backdrop" onClick={function () { setNavOpen(false) }} aria-hidden="true" />
+      ) : null}
+
+      <nav
+        id="app-nav"
+        className={navOpen ? 'app-nav open' : 'app-nav'}
+        aria-label="Views"
+      >
         {TABS.map(function (item) {
           return (
             <button
               key={item.key}
               type="button"
               className={tab === item.key ? 'tab active' : 'tab'}
-              onClick={function () { setTab(item.key) }}
+              aria-current={tab === item.key ? 'page' : undefined}
+              onClick={function () { setTab(item.key); setNavOpen(false) }}
             >
               {item.label}
             </button>
           )
         })}
+        {/* On a phone the pills have nowhere to sit in the header, so the panel carries them. */}
+        <span className="nav-status">
+          {country ? country.name + ' | ' + currency : 'loading...'}
+          {health ? ' | api ' + health.status : ''}
+        </span>
       </nav>
 
       {runError ? <div className="notice notice-critical">{runError}</div> : null}
