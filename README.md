@@ -10,6 +10,9 @@ reconciliation **waterfall** and a **sensitivity analysis**.
 | Singapore | **SMM2** (Standard Method of Measurement, 2nd Ed.) | SGD | **BCA Schedule of Rates, May 2022** x 1.171 to Q2 2026 - and **BCA is the only index** a benchmark may run against | no usable **PPI** (documented gap), so the **SingStat CPI, All Items** (2024 = 100) - **real** |
 | India | **IS 1200** + **CPWD DSR** chapter structure | INR | **CPWD Delhi Schedule of Rates 2021 Vol-II** x 1.2364 to Q2 2026 - and **CPWD is the only index** a benchmark may run against | **OEA producer price index, 16 commodity baskets** (2022-23 = 100) - **real** - with the **MoSPI CPI, Combined, All-India** as fallback |
 
+**Licences:** the source code is **MIT** (`LICENSE`); the compiled dataset under `backend/data/` and
+anything derived from it is **CC BY 4.0** (`LICENSE-DATA`). See [Licensing](#licensing).
+
 The **rate library is derived to current**: every rate comes from a named published schedule of rates,
 cumulative-adjusted to **Q2 2026** by the factor the schedule's own source file states. Each row records
 the quarter it is expressed at (`base_quarter`), and the app escalates from *that* quarter - never from
@@ -582,6 +585,9 @@ compatibility; `classification_standard` carries the truth.
 ---
 
 ## Seed data: published observations, derived figures, retained estimates
+
+These files, and everything computed from them, are licensed **CC BY 4.0** rather than MIT: see
+`LICENSE-DATA` and [Licensing](#licensing).
 
 Every seeded row declares which of the three things it is, and the split is stated here rather than
 implied. The API carries one boolean for it - `is_placeholder` - because that is what the row-level
@@ -1750,6 +1756,34 @@ year, so it does not map one-to-one onto the city multipliers); the **CPWD Delhi
 and its piling chapter; **BCA Construction InfoNet** and the **SISV** tender price circulars for
 Singapore; and the **MOM** wage data for construction labour. Each is labelled `wired`, `partial` or
 `gap` against the section it would close, on `GET /api/indices/coverage`.
+
+---
+
+## Licensing
+
+Two licences, because the repository holds two different things:
+
+| what | licence | file |
+|---|---|---|
+| **Source code** - the FastAPI backend, the React frontend, the ETL, tools and tests | **MIT** | `LICENSE` |
+| **Compiled dataset and derived data** - the seed files under `backend/data/` (the two schedules of rates as compiled catalogues, the rate library, the index, price and material series, the regional factors, the demonstration bills) and anything computed from them (escalated and base-quarter-adjusted rates, bridge factors, variance, waterfall, coverage and should-cost outputs, and every CSV, XLSX or report the API exports) | **CC BY 4.0** | `LICENSE-DATA` |
+
+The MIT licence is the standard text, with one line at the end recording that the data is licensed
+separately. `LICENSE-DATA` states the scope, the attribution CC BY 4.0 requires, and the full legal
+code from Creative Commons rather than a paraphrase of it.
+
+**Attribute the data as:** *shouldcost - https://github.com/olenny-coder/shouldcost-sg (CC BY 4.0)*.
+Because the compilation is built from published sources, keep each figure's own source named beside
+it; every seed row carries `source`, `source_url`, `source_date` and `provenance_note` for exactly
+that reason.
+
+**What the data licence cannot do.** It covers the compilation and the derivation work, which is what
+this project owns. It does not relicense the underlying publications: the BCA Schedule of Rates, the
+CPWD Delhi Schedule of Rates and the NBO city cost indices remain subject to their publishers' terms,
+and a figure transcribed from a public statistical release remains subject to that release's terms.
+Where a document is licensed rather than public it is cited rather than reproduced, and every rate
+built on one is auditable - the source row, the escalation factor and the base quarter are all in the
+data. `LICENSE-DATA` names every publication the compilation draws on.
 
 ---
 

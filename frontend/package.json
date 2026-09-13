@@ -3,7 +3,8 @@
   "private": true,
   "version": "1.0.0",
   "type": "module",
-  "description": "Should-cost BoQ benchmarking UI for the Singapore construction market",
+  "description": "Should-cost BoQ benchmarking UI for the Singapore and India construction markets",
+  "license": "MIT",
   "scripts": {
     "dev": "vite",
     "build": "vite build",
