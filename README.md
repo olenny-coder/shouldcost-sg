@@ -1204,9 +1204,44 @@ live.
 
 ### Theme and responsive behaviour
 
-Light blue throughout: a gradient page background, white cards at 20px radius, soft blue shadows,
-pill-shaped tabs, chips and badges, and rounded inputs. Colours are driven by CSS custom properties
-at the top of `styles.css`, so the whole palette can be re-themed in one place.
+**Two themes, one palette, and every rule painted with a token.** `styles.css` opens with two blocks of
+custom properties - `:root` for light, `[data-theme="dark"]` for dark - and no rule below them names a
+colour literal. The core, brand, accent, status and chart-series values are the design table's,
+unchanged; a handful of tokens marked *derived* are the same palette worked out for the jobs the table
+does not name (zebra and hover tints, legible text on a subtle status background, the header gradient,
+the shadows, the sticky bar). The Recharts charts take the palette from `src/theme.jsx`, because SVG
+needs literal colours rather than `var()`.
+
+The switch is a button in the header, and in the mobile app bar so it is reachable without scrolling
+back to the top. It carries `aria-pressed` and a label naming the action, so it reads as state *and*
+action. The choice is stored in `localStorage`; with nothing stored the OS preference decides, and an
+OS change still moves the app while the analyst has not chosen. The theme is applied by an inline
+script in `index.html` **before the bundle loads**, so a dark-mode user never sees a white flash - and
+`color-scheme` is set there too, so native selects, inputs and scrollbars follow.
+
+The palette is verified rather than eyeballed, in a real browser, in both themes:
+
+| check | result |
+|---|---|
+| 38 tokens against the design table, per theme | **match** |
+| WCAG contrast, the 14 token pairs the app relies on | **4.5:1 or better**, except the palette's own white-on-amber (`--on-accent`, 3.2:1), which the app reserves for the amber chart line - small amber text uses `--accent-hover` at 5.0:1 |
+| WCAG contrast on 12 **rendered** elements, measured from their computed colour against the first opaque background behind them | **4.5:1 or better**, worst 4.51:1 |
+| header title and subtitle against **both stops of the header gradient**, resolved out of `--header-bg` | **4.5:1 or better** |
+| every colour the charts paint, read back as computed style | **in the palette** - this is what caught Recharts' own `#666` axis defaults and its hardcoded `#fff` line dots, both now set from CSS |
+| the switch: toggles, stores, survives a reload, and is applied before the bundle runs | **pass** |
+| OS preference with nothing stored, both ways | **pass** |
+| all six views at 390px in dark | **no overrun, no clipped text** |
+
+Two contrast decisions are deliberate rather than accidental. Muted text is 4.76:1 on a card but was
+4.34:1 on `#F1F5F9`, so `--surface-subtle` is mixed a little lighter
+(`color-mix(in srgb, var(--background-alt) 60%, var(--surface))`) and every rule that puts text on an
+amber-tinted surface steps up to `--text-secondary` (7.6:1 light, 9.1:1 dark). The section pill moved
+from `--primary` on `--primary-subtle` (4.24:1) to a derived `--on-primary-subtle` (6.9:1 light,
+5.4:1 dark).
+
+Light theme: a gradient page background, white cards at 20px radius, soft shadows, pill-shaped tabs,
+chips and badges, rounded inputs. Dark theme: the same layout on `#0A0F1E`, `#111827` cards, and a
+cyan brand (`#00C2FF`) that stays legible on both.
 
 **Navigation collapses to a hamburger below 901px.** The six views are a horizontal pill row on a
 desktop and a panel behind a toggle in a sticky app bar on a phone, because six pills at 360px either

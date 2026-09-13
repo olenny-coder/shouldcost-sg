@@ -4,6 +4,7 @@ import {
   ResponsiveContainer, Tooltip, XAxis, YAxis,
 } from 'recharts'
 import { compactMoney as compactFmt, money as moneyFmt, num, BASIS_LABEL } from '../format.js'
+import { useTheme } from '../theme.jsx'
 import HelpPopout from './HelpPopout.jsx'
 
 const COMPONENT_LABEL = {
@@ -17,11 +18,10 @@ const COMPONENT_LABEL = {
   unexplained: 'Unexplained residual',
 }
 
-// Bars run through one blue family so the chart reads as a single movement.
-// The opening and closing totals are the deepest tones; the components step
-// through progressively lighter blues. BASIS is not encoded in the fill - it is
-// carried by the value labels and the basis chips under the axis, and in full in
-// the reconciliation table.
+// Bars take one entry each from the chart series palette, so adjacent bars stay
+// distinguishable. BASIS is not encoded in the fill - it is carried by the value
+// labels and the basis chips under the axis, and in full in the reconciliation
+// table.
 const COMPONENT_SHORT = {
   material: 'Material',
   labour: 'Labour',
@@ -31,25 +31,6 @@ const COMPONENT_SHORT = {
   overhead: 'Overheads',
   margin: 'Margin',
   unexplained: 'Unexplained',
-}
-
-const COLOR = {
-  boq: '#12325c',
-  should: '#0e7490',
-  material: '#1d4ed8',
-  labour: '#2563eb',
-  market_risk: '#3b82f6',
-  cpi_bridge: '#0e7490',
-  scope: '#60a5fa',
-  overhead: '#7c3aed',
-  margin: '#a855f7',
-  unexplained: '#93c5fd',
-}
-
-const LABEL_COLOR = {
-  measured: '#065f46',
-  derived: '#1d4ed8',
-  assumed: '#b45309',
 }
 
 function WaterfallTooltip(props) {
@@ -86,6 +67,7 @@ function WaterfallTooltip(props) {
 export default function WaterfallChart(props) {
   const result = props.result
   const [showTable, setShowTable] = useState(true)
+  const { theme, charts } = useTheme()
   const currency = props.currency || result.currency || 'SGD'
   // Currency-bound aliases, so every call site below stays unchanged.
   const money = function (value) { return moneyFmt(value, currency) }
@@ -95,6 +77,34 @@ export default function WaterfallChart(props) {
     && result.totals.full_should_cost_total !== null
     ? result.totals.full_should_cost_total
     : result.totals.should_cost_total
+
+  // One palette entry per bar, resolved for the active theme. The steps are spread
+  // across the series palette so adjacent bars stay distinguishable.
+  const barColor = useMemo(function () {
+    return {
+      boq: charts.series[0],
+      should: charts.series[5],
+      material: charts.series[4],
+      labour: charts.series[0],
+      market_risk: charts.series[1],
+      cpi_bridge: charts.series[5],
+      scope: charts.series[2],
+      overhead: charts.series[4],
+      margin: charts.series[6],
+      unexplained: charts.series[7],
+    }
+  }, [theme, charts])
+
+  // The value labels are the only place the basis is coloured: measured green,
+  // derived blue, assumed amber. accentStrong rather than accent, because these labels are 11px
+  // text and the plain accent is a line colour (3.2:1 against a light surface, 5.0:1 for this one).
+  const labelColor = useMemo(function () {
+    return {
+      measured: charts.success,
+      derived: charts.primary,
+      assumed: charts.accentStrong,
+    }
+  }, [theme, charts])
 
   const rows = useMemo(function () {
     const out = []
@@ -149,7 +159,7 @@ export default function WaterfallChart(props) {
   }, [result, ohpActive, fullTotal])
 
   // Draw each bar's amount above it, coloured by basis so the assumed bars stay
-  // visually flagged even though every bar is now a shade of blue.
+  // visually flagged even though every bar is drawn in the series palette.
   function renderValueLabel(props) {
     const row = rows[props.index]
     if (!row) return null
@@ -162,7 +172,7 @@ export default function WaterfallChart(props) {
         textAnchor="middle"
         fontSize={11}
         fontWeight={700}
-        fill={LABEL_COLOR[row.basis] || '#1d4ed8'}
+        fill={labelColor[row.basis] || charts.primary}
       >
         {prefix + compactMoney(amount, currency)}
       </text>
@@ -182,7 +192,7 @@ export default function WaterfallChart(props) {
           title="Reading the waterfall"
           items={[
             'Read it left to right. The first bar is the BoQ as tendered; the last is the benchmark should-cost. Everything between is a step from one to the other.',
-            'A blue bar rising means that step pushed should-cost above the tender; falling means it pulled it below.',
+            'A bar rising above the one before it means that step pushed should-cost up; falling means it pulled it down.',
             'The number above each bar is that step\'s amount. Its colour states the basis: green measured, blue derived, amber assumed.',
             'The small chips under the axis repeat each step\'s basis. Amber steps are not evidence - they are apportioned, bridged or analyst-supplied.',
             'Overheads and margin, when you set them, are the last two steps before the closing bar, and the closing bar is then the FULL should-cost.',
@@ -195,9 +205,10 @@ export default function WaterfallChart(props) {
         />
       </h2>
       <p className="muted">
-        One blue family, light to dark: the deepest bars are the opening BoQ total and the closing
-        should-cost total. <strong>Amber numbers and chips mark assumed steps</strong> - apportioned,
-        carried forward or analyst-supplied, never measured.
+        Each step has its own colour from the chart palette, so a bar can be told from the one before
+        it; the opening BoQ total and the closing should-cost total are the two totals.
+        <strong> Amber numbers and chips mark assumed steps</strong> - apportioned, carried forward
+        or analyst-supplied, never measured.
       </p>
 
       {result.index_bridge && result.index_bridge.applied ? (
@@ -223,19 +234,19 @@ export default function WaterfallChart(props) {
       <div style={{ width: '100%', height: 440 }}>
         <ResponsiveContainer>
           <BarChart data={rows} margin={{ top: 28, right: 24, bottom: 84, left: 24 }}>
-            <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#e3eefb" />
+            <CartesianGrid strokeDasharray="3 3" vertical={false} stroke={charts.grid} />
             <XAxis
               dataKey="name"
               angle={-25}
               textAnchor="end"
               interval={0}
               height={92}
-              tick={{ fontSize: 11, fill: '#33507a' }}
+              tick={{ fontSize: 11, fill: charts.textMuted }}
             />
             <YAxis tickFormatter={compactMoney} width={92} tick={{ fontSize: 11 }} />
             <Tooltip content={<WaterfallTooltip currency={currency} />} />
             <Legend />
-            <ReferenceLine y={0} stroke="#94a3b8" />
+            <ReferenceLine y={0} stroke={charts.border} />
             <Bar dataKey="base" stackId="w" fill="rgba(0,0,0,0)" name="Opening position" isAnimationActive={false} />
             <Bar
               dataKey="delta"
@@ -245,7 +256,7 @@ export default function WaterfallChart(props) {
               radius={[9, 9, 9, 9]}
             >
               {rows.map(function (row, index) {
-                return <Cell key={index} fill={COLOR[row.colorKey]} />
+                return <Cell key={index} fill={barColor[row.colorKey]} />
               })}
               <LabelList dataKey="delta" content={renderValueLabel} />
             </Bar>

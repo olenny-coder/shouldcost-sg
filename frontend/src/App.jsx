@@ -13,6 +13,7 @@ import ClassificationRules from './components/ClassificationRules.jsx'
 import ExportBar from './components/ExportBar.jsx'
 import CoveragePanel from './components/CoveragePanel.jsx'
 import Logo from './components/Logo.jsx'
+import { ThemeToggle } from './theme.jsx'
 
 const SECTION_OPTIONS = [
   'Concrete', 'Reinforcement', 'Formwork', 'Masonry', 'Plaster',
@@ -591,6 +592,7 @@ export default function App() {
           </p>
         </div>
         <div className="header-status">
+          <ThemeToggle />
           <span className="pill">
             <span className={health && health.status === 'ok' ? 'dot dot-ok' : 'dot dot-bad'} />
             {health ? 'API ' + health.status + ' | db ' + health.db : 'connecting...'}
@@ -720,17 +722,21 @@ export default function App() {
           <Logo size={24} />
           <span className="app-bar-name">shouldcost</span>
         </div>
-        <button
-          type="button"
-          className={navOpen ? 'nav-toggle open' : 'nav-toggle'}
-          aria-label={navOpen ? 'Close navigation' : 'Open navigation'}
-          aria-expanded={navOpen}
-          aria-controls="app-nav"
-          onClick={function () { setNavOpen(function (open) { return !open }) }}
-        >
-          <span className="nav-bars" aria-hidden="true"><i /><i /><i /></span>
-          <span className="nav-toggle-label">{navOpen ? 'Close' : 'Menu'}</span>
-        </button>
+        <div className="app-bar-actions">
+          {/* Reachable without scrolling back to the header, which the sticky bar outlives. */}
+          <ThemeToggle className="theme-toggle-bar" />
+          <button
+            type="button"
+            className={navOpen ? 'nav-toggle open' : 'nav-toggle'}
+            aria-label={navOpen ? 'Close navigation' : 'Open navigation'}
+            aria-expanded={navOpen}
+            aria-controls="app-nav"
+            onClick={function () { setNavOpen(function (open) { return !open }) }}
+          >
+            <span className="nav-bars" aria-hidden="true"><i /><i /><i /></span>
+            <span className="nav-toggle-label">{navOpen ? 'Close' : 'Menu'}</span>
+          </button>
+        </div>
       </div>
 
       {navOpen ? (

@@ -4,10 +4,8 @@ import {
   ResponsiveContainer, Tooltip, XAxis, YAxis,
 } from 'recharts';
 import { compactMoney, money, num, pct } from '../format.js';
+import { useTheme } from '../theme.jsx';
 import HelpPopout from './HelpPopout.jsx';
-
-const NEGATIVE = '#b91c1c';
-const POSITIVE = '#2563eb';
 
 /**
  * Sensitivity analysis.
@@ -20,6 +18,10 @@ const POSITIVE = '#2563eb';
  * the bars show which sections actually drive the answer.
  */
 export default function SensitivityView(props) {
+  // The tornado's two bars read as "down" and "up" against the should-cost curve.
+  const { charts } = useTheme();
+  const NEGATIVE = charts.danger;
+  const POSITIVE = charts.primary;
   const [min, setMin] = useState('-20');
   const [max, setMax] = useState('20');
   const [step, setStep] = useState('5');
@@ -143,7 +145,7 @@ export default function SensitivityView(props) {
             <div style={{ width: '100%', height: 320 }}>
               <ResponsiveContainer>
                 <LineChart data={data.tpi_sweep} margin={{ top: 10, right: 20, bottom: 10, left: 10 }}>
-                  <CartesianGrid strokeDasharray="3 3" stroke="#e3eefb" />
+                  <CartesianGrid strokeDasharray="3 3" stroke={charts.grid} />
                   <XAxis dataKey="tpi_scale_pct" tickFormatter={function (v) { return v + '%'; }} tick={{ fontSize: 11 }} />
                   <YAxis tickFormatter={function (v) { return compactMoney(v, currency); }} width={92} tick={{ fontSize: 11 }} />
                   <Tooltip
@@ -153,15 +155,15 @@ export default function SensitivityView(props) {
                   <Legend />
                   <ReferenceLine
                     y={data.baseline.boq_total}
-                    stroke="#b45309"
+                    stroke={charts.accent}
                     strokeDasharray="6 3"
-                    label={{ value: 'BoQ tender total', position: 'insideTopRight', fontSize: 11, fill: '#b45309' }}
+                    label={{ value: 'BoQ tender total', position: 'insideTopRight', fontSize: 11, fill: charts.accentStrong }}
                   />
                   <Line
                     type="monotone"
                     dataKey="should_cost_total"
                     name="Should-cost total"
-                    stroke="#2563eb"
+                    stroke={charts.primary}
                     strokeWidth={2.5}
                     dot={{ r: 3 }}
                   />
@@ -169,7 +171,7 @@ export default function SensitivityView(props) {
                     type="monotone"
                     dataKey="total_variance_abs"
                     name="Variance to BoQ"
-                    stroke="#7c3aed"
+                    stroke={charts.chart5}
                     strokeWidth={1.5}
                     strokeDasharray="4 3"
                     dot={false}
@@ -191,12 +193,12 @@ export default function SensitivityView(props) {
                   data={data.section_tornado}
                   margin={{ top: 10, right: 24, bottom: 10, left: 10 }}
                 >
-                  <CartesianGrid strokeDasharray="3 3" stroke="#e3eefb" horizontal={false} />
+                  <CartesianGrid strokeDasharray="3 3" stroke={charts.grid} horizontal={false} />
                   <XAxis type="number" tickFormatter={function (v) { return compactMoney(v, currency); }} tick={{ fontSize: 11 }} />
                   <YAxis type="category" dataKey="smm2_section" width={130} tick={{ fontSize: 11 }} />
                   <Tooltip formatter={function (value) { return money(value, currency); }} />
                   <Legend />
-                  <ReferenceLine x={0} stroke="#94a3b8" />
+                  <ReferenceLine x={0} stroke={charts.border} />
                   <Bar dataKey="delta_low" name={'Rate -' + num(data.section_scale_pct, 1) + '%'} fill={NEGATIVE} />
                   <Bar dataKey="delta_high" name={'Rate +' + num(data.section_scale_pct, 1) + '%'} fill={POSITIVE} />
                 </BarChart>

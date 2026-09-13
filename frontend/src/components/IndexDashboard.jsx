@@ -3,16 +3,12 @@ import {
   CartesianGrid, Legend, Line, LineChart, ResponsiveContainer, Tooltip, XAxis, YAxis,
 } from 'recharts';
 import { money, num, currencySymbol } from '../format.js';
+import { useTheme } from '../theme.jsx';
 import {
   bridgeFactor, bridgeFromMonths, bridgeFromValue, bridgeKind, bridgeKindLong,
   bridgeReason, bridgeSeries, bridgeToMonths, bridgeToValue,
 } from '../bridge.js';
 import HelpPopout from './HelpPopout.jsx';
-
-const SERIES_COLORS = {
-  BCA: '#2563eb', HDB: '#047857', RLB: '#d97706', AECOM: '#7c3aed', AIS: '#be123c',
-  CPWD: '#2563eb', NBO: '#047857', 'WPI-CON': '#d97706',
-};
 
 const MATERIAL_LABEL = {
   cement: 'Cement',
@@ -91,6 +87,7 @@ export default function IndexDashboard(props) {
   const benchmarkRates = props.benchmarkRates || [];
   const country = props.country || { name: 'Singapore', currency: 'SGD', base_year: 2010, sources: [] };
   const currency = props.currency || country.currency || 'SGD';
+  const { theme, charts } = useTheme();
   const [material, setMaterial] = useState('steel_rebar');
   // DISPLAY-ONLY scenario multiplier. Material prices are not part of the rate
   // formula, so this never changes should-cost - it is labelled as such.
@@ -108,6 +105,16 @@ export default function IndexDashboard(props) {
   const toggleCoverage = useCallback(function () {
     setCoverageOpen(function (current) { return !current; });
   }, []);
+
+  // One series palette entry per published index series. Related series share an
+  // entry (the BCA and CPWD rate schedules, the two labour series) and anything
+  // unrecognised falls back to the muted grey.
+  const seriesColors = useMemo(function () {
+    return {
+      BCA: charts.series[0], HDB: charts.series[2], RLB: charts.series[1], AECOM: charts.series[4],
+      AIS: charts.series[3], CPWD: charts.series[0], NBO: charts.series[2], 'WPI-CON': charts.series[1],
+    };
+  }, [theme, charts]);
 
   const tpiData = useMemo(function () {
     const byQuarter = {};
@@ -452,7 +459,7 @@ export default function IndexDashboard(props) {
         <div style={{ width: '100%', height: 320 }}>
           <ResponsiveContainer>
             <LineChart data={tpiData.points} margin={{ top: 10, right: 20, bottom: 10, left: 6 }}>
-              <CartesianGrid strokeDasharray="3 3" stroke="#e3eefb" />
+              <CartesianGrid strokeDasharray="3 3" stroke={charts.grid} />
               <XAxis dataKey="quarter" tick={{ fontSize: 11 }} />
               <YAxis domain={['auto', 'auto']} tick={{ fontSize: 11 }} />
               <Tooltip />
@@ -463,7 +470,7 @@ export default function IndexDashboard(props) {
                     key={name}
                     type="monotone"
                     dataKey={name}
-                    stroke={SERIES_COLORS[name] || '#334155'}
+                    stroke={seriesColors[name] || charts.series[7]}
                     strokeWidth={2}
                     dot={{ r: 3 }}
                   />
@@ -664,12 +671,12 @@ export default function IndexDashboard(props) {
           <div style={{ width: '100%', height: 280 }}>
             <ResponsiveContainer>
               <LineChart data={ppiData.points} margin={{ top: 10, right: 20, bottom: 10, left: 6 }}>
-                <CartesianGrid strokeDasharray="3 3" stroke="#e3eefb" />
+                <CartesianGrid strokeDasharray="3 3" stroke={charts.grid} />
                 <XAxis dataKey="month" tick={{ fontSize: 11 }} minTickGap={24} />
                 <YAxis
                   domain={['auto', 'auto']}
                   tick={{ fontSize: 11 }}
-                  label={{ value: 'index (2022-23 = 100)', angle: -90, position: 'insideLeft', fontSize: 10, fill: '#64809f' }}
+                  label={{ value: 'index (2022-23 = 100)', angle: -90, position: 'insideLeft', fontSize: 10, fill: charts.textMuted }}
                 />
                 <Tooltip formatter={function (value) { return num(value, 1) + ' index points'; }} />
                 <Legend />
@@ -680,7 +687,7 @@ export default function IndexDashboard(props) {
                       type="monotone"
                       dataKey={name}
                       name={name}
-                      stroke="#1d4ed8"
+                      stroke={charts.primary}
                       strokeWidth={2.4}
                       dot={false}
                     />
@@ -779,14 +786,14 @@ export default function IndexDashboard(props) {
           <div style={{ width: '100%', height: 260 }}>
             <ResponsiveContainer>
               <LineChart data={cpiData} margin={{ top: 10, right: 20, bottom: 10, left: 6 }}>
-                <CartesianGrid strokeDasharray="3 3" stroke="#e3eefb" />
+                <CartesianGrid strokeDasharray="3 3" stroke={charts.grid} />
                 <XAxis dataKey="month" tick={{ fontSize: 11 }} minTickGap={24} />
                 <YAxis
                   domain={['auto', 'auto']}
                   tick={{ fontSize: 11 }}
                   label={{
                     value: cpiMeta.latest ? 'index (' + cpiMeta.latest.base_year + ' = 100)' : 'index',
-                    angle: -90, position: 'insideLeft', fontSize: 10, fill: '#64809f',
+                    angle: -90, position: 'insideLeft', fontSize: 10, fill: charts.textMuted,
                   }}
                 />
                 <Tooltip formatter={function (value) { return num(value, 3) + ' index points'; }} />
@@ -795,7 +802,7 @@ export default function IndexDashboard(props) {
                   type="monotone"
                   dataKey="value"
                   name="CPI, all items"
-                  stroke="#b45309"
+                  stroke={charts.accent}
                   strokeWidth={2.4}
                   dot={false}
                 />
@@ -849,12 +856,12 @@ export default function IndexDashboard(props) {
         <div style={{ width: '100%', height: 290 }}>
           <ResponsiveContainer>
             <LineChart data={materialData} margin={{ top: 10, right: 20, bottom: 10, left: 6 }}>
-              <CartesianGrid strokeDasharray="3 3" stroke="#e3eefb" />
+              <CartesianGrid strokeDasharray="3 3" stroke={charts.grid} />
               <XAxis dataKey="month" tick={{ fontSize: 11 }} />
               <YAxis
                 domain={['auto', 'auto']}
                 tick={{ fontSize: 11 }}
-                label={{ value: selectedUnit, angle: -90, position: 'insideLeft', fontSize: 10, fill: '#64809f' }}
+                label={{ value: selectedUnit, angle: -90, position: 'insideLeft', fontSize: 10, fill: charts.textMuted }}
               />
               <Tooltip
                 formatter={function (value) {
@@ -866,7 +873,7 @@ export default function IndexDashboard(props) {
                 type="monotone"
                 dataKey="published"
                 name="Published"
-                stroke="#94a3b8"
+                stroke={charts.series[7]}
                 strokeWidth={1.5}
                 strokeDasharray="4 3"
                 dot={false}
@@ -875,7 +882,7 @@ export default function IndexDashboard(props) {
                 type="monotone"
                 dataKey="price"
                 name={'Scenario ' + (materialScenarioPct > 0 ? '+' : '') + materialScenarioPct + '%'}
-                stroke="#0f766e"
+                stroke={charts.series[5]}
                 strokeWidth={2.5}
                 dot={{ r: 3 }}
               />

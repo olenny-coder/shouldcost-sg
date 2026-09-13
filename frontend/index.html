@@ -8,11 +8,31 @@
          Inline rather than a file, which also avoids a 404 on /favicon.ico. -->
     <link
       rel="icon"
-      href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 40 40'%3E%3Crect width='40' height='40' rx='9' fill='%232563eb'/%3E%3Cline x1='8' y1='15.5' x2='32' y2='15.5' stroke='%23ffffff' stroke-opacity='0.5' stroke-width='1.4' stroke-dasharray='3 3'/%3E%3Cpath d='M8 27.5 C 13 26.5, 15 19.5, 20 17.5 S 28.5 15.5, 32 15.5' fill='none' stroke='%23ffffff' stroke-width='2.6' stroke-linecap='round'/%3E%3Ccircle cx='8' cy='27.5' r='2.6' fill='%23ffffff'/%3E%3Ccircle cx='32' cy='15.5' r='2.6' fill='%23ffffff'/%3E%3C/svg%3E"
+      href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 40 40'%3E%3Crect width='40' height='40' rx='9' fill='%230077B6'/%3E%3Cline x1='8' y1='15.5' x2='32' y2='15.5' stroke='%23ffffff' stroke-opacity='0.5' stroke-width='1.4' stroke-dasharray='3 3'/%3E%3Cpath d='M8 27.5 C 13 26.5, 15 19.5, 20 17.5 S 28.5 15.5, 32 15.5' fill='none' stroke='%23ffffff' stroke-width='2.6' stroke-linecap='round'/%3E%3Ccircle cx='8' cy='27.5' r='2.6' fill='%23ffffff'/%3E%3Ccircle cx='32' cy='15.5' r='2.6' fill='%23ffffff'/%3E%3C/svg%3E"
     />
     <title>shouldcost | BoQ should-cost benchmarking</title>
     <meta name="description" content="Should-cost BoQ benchmarking for the Singapore and India construction markets: SMM2 / IS 1200 classification, published cost-index adjustment and variance reporting." />
-    <meta name="theme-color" content="#2563eb" />
+    <!-- The browser chrome colour follows the theme, so a phone's address bar matches the app. -->
+    <meta name="theme-color" content="#F8FAFC" media="(prefers-color-scheme: light)" />
+    <meta name="theme-color" content="#0A0F1E" media="(prefers-color-scheme: dark)" />
+    <!-- Applied BEFORE the bundle loads: the stored choice, else the OS preference. Without this
+         the first paint is light for everyone and a dark-mode user sees a white flash. React adopts
+         whatever this decides rather than deciding again. Keep the storage key in step with
+         STORAGE_KEY in src/theme.jsx. -->
+    <script>
+      (function () {
+        var theme = 'light'
+        try {
+          var stored = window.localStorage.getItem('shouldcost-theme')
+          if (stored === 'light' || stored === 'dark') theme = stored
+          else if (window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches) theme = 'dark'
+        } catch (error) {
+          if (window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches) theme = 'dark'
+        }
+        document.documentElement.setAttribute('data-theme', theme)
+        document.documentElement.style.colorScheme = theme
+      })()
+    </script>
   </head>
   <body>
     <div id="root"></div>
